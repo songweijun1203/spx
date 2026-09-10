@@ -156,28 +156,78 @@ func onStart() {
 	game.OnEngineStart()
 }
 
+// -----------------------------------------------------------------------------
+//总体调用逻辑
+// -----------------------------------------------------------------------------
+//1 缓存 C++ 输入和碰撞事件
+//2 准备输入与条件采样
+//3 推进 SPX 逻辑时钟
+//4 执行游戏帧准备及前置同步
+//5 读取所有游戏脚本协程
+//6 提交协程执行后的视觉状态
+//7 处理截图
+//8 结束录制/回放输入帧
+
 func onUpdate(delta float64) {
 	defer CheckPanic()
 	profiler.BeginSample()
 	defer profiler.EndSample()
-	cacheTriggerEvents()
-	cacheKeyEvents()
-	cacheMouseEvents()
+	cacheTriggerEvents() //本帧到达的碰撞事件从临时队列缓存到主队列，供游戏逻辑处理，Game.OnEngineRender 的 processPhysicsTriggers() 中消费
+	cacheKeyEvents()     //本帧到达的按键事件从临时队列缓存到主队列，供游戏逻辑处理
+	cacheMouseEvents()   //本帧到达的鼠标事件从临时队列缓存到主队列，供游戏逻辑处理
+
+	//清空上一帧的事件
+	//处理录制/回放输入
+	//采样 touching、keyPressed 等条件事件
+	//它放在 updateTime 之前，意味着条件采样使用的是时间推进前的本帧输入状态。
 	game.OnEngineBeforeUpdate(delta)
+
+	//推进 SPX 逻辑时钟，会更新
+	// DeltaTime，TimeSinceLevelLoad，当前帧号 Frame，FPS，每调用一次，SPX 帧号增加 1
 	updateTime(delta)
+
 	profiler.MeasureFunctionTime("GameUpdate", func() {
+		//游戏帧的逻辑准备
+		//分发条件事件
+		//分发处理录制/回放输入
+		//更新声音状态
+		//触发开始事件或帧回调
+		//把已有 Go 精灵状态同步给 C++
+		//读取物理精灵位置
 		game.OnEngineUpdate(delta)
 	})
+
 	profiler.MeasureFunctionTime("CoroUpdateJobs", func() {
+		//推进 SPX 协程调度器，这里才是游戏脚本的主要执行阶段
+		//onStart
+		//onMsg
+		//onKey
+		//forever
+		//repeat
+		//wait
+		//waitUntil
+		//满足运行条件的协程会被↩恢复执行，直到
+		//主动等待、循环边界让出、执行结束、被取消、达到调度时间预算
 		gco.Update()
 	})
+
 	profiler.MeasureFunctionTime("GameRender", func() {
+		//执行协程结束后的渲染准备，并记录耗时为 GameRender
+		//名字容易误解，他不是Godot真正执行CPU渲染，而是绘制前的状态收尾，会：
+		//1 必要时同步协程刚修改的视觉状态
+		//2 处理克隆发布
+		//3 处理物理触发事件
+		//4 刷新画笔命令
 		game.OnEngineRender(delta)
 	})
+
 	if err := FlushCaptures(); err != nil {
 		Panic(err)
 		return
 	}
+
+	//标记本帧结束。当前主要用于完成输入录制/回放帧
+	//输入已处理 协程已运行 视觉状态已提交 截图已处理
 	game.OnEngineFrameEnd()
 }
 
