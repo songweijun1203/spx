@@ -71,6 +71,7 @@ func (p *Coroutines) RequestRedraw() {
 // ReadScriptState reads state on the engine thread, excluding script execution.
 func (p *Coroutines) ReadScriptState(call func()) {
 	for !p.runMu.TryLock() {
+		//runMu 加锁失败，说明当前有脚本正在执行，等待它执行完毕
 		// Service engine calls so a waiting script can release runMu.
 		if job := p.takeMainThreadJob(); job != nil {
 			job.Call()
@@ -79,6 +80,8 @@ func (p *Coroutines) ReadScriptState(call func()) {
 		}
 	}
 	defer p.runMu.Unlock()
+
+	//此时 runMu 已经加锁，说明没有脚本正在执行，可以安全地读取脚本状态
 	call()
 }
 

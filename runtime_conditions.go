@@ -43,6 +43,7 @@ func (p *scriptEventBindings) OnCond(__xgo_autoclosure_condition func() bool, on
 // sampleConditions reads a consistent snapshot before the frame clock advances.
 func (p *scriptEventRegistry) sampleConditions() {
 	read := func() {
+		//取出所有注册在 BucketCondition 中的条件处理器，然后逐个执行条件判断
 		p.pendingConditions = matchingEventSinks(p.globalSinks(coreevent.BucketCondition), nil)
 	}
 	if gco == nil {

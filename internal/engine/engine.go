@@ -193,7 +193,7 @@ func onUpdate(delta float64) {
 		//触发开始事件或帧回调
 		//把已有 Go 精灵状态同步给 C++
 		//读取物理精灵位置
-		game.OnEngineUpdate(delta)
+		game.OnEngineUpdate(delta) //位于runtime_engine.go中，主要是处理游戏逻辑
 	})
 
 	profiler.MeasureFunctionTime("CoroUpdateJobs", func() {
