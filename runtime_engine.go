@@ -66,9 +66,14 @@ func (p *Game) OnEngineReset() {
 }
 
 // OnEngineBeforeUpdate resolves input and samples conditions before advancing the clock.
+// 在本帧逻辑时间推进前确定本帧有效输入，然后对OnCond条件帽进行一次一致性采样。它不直接执行条件对应的脚本
 func (p *Game) OnEngineBeforeUpdate(delta float64) {
+	//pendingConditions 上一次条件采样中，已经判断为满足触发条件、等待派发的 OnCond 处理器
+	//这里不是清空键盘 鼠标 碰撞事件
+	//正常情况下，本帧采样得到的pendingConditions会在 OnEngineUpdate 中消费并清空，这里再次设为nil是边界保护
+	//避免异常路径或者上一帧未完成派发时留下旧结果
 	p.scriptEvents.pendingConditions = nil
-	if p.lifecycleState.IsRunned.Load() {
+	if p.lifecycleState.IsRunned.Load() { //判断游戏是否已经运行
 		if session := p.currentInputSession(); session != nil {
 			if !p.inputMgr.prepareInputSessionTick(session, delta) {
 				return
@@ -76,18 +81,31 @@ func (p *Game) OnEngineBeforeUpdate(delta float64) {
 		}
 	}
 	if p.lifecycleState.StartDispatched.Load() {
+		//对所有 OnCond 条件进行采样
 		p.scriptEvents.sampleConditions()
 	}
 }
 
+// 1 游戏帧的逻辑准备
+// 2 分发条件事件
+// 3 分发处理录制/回放输入
+// 4 更新声音状态
+// 5 触发开始事件或帧回调
+// 6 把已有 Go 精灵状态同步给 C++
+// 7 读取物理精灵位置
 func (p *Game) OnEngineUpdate(delta float64) {
 	if !p.lifecycleState.IsRunned.Load() {
 		return
 	}
 	session := p.currentInputSession()
 	if session != nil && session.input.pending == nil {
+		//如果是录制/回放输入模式，且本帧没有任何输入事件，则不执行游戏逻辑
+		//因为游戏逻辑的执行会消耗CPU资源，且在录制/回放输入模式下，游戏逻辑的执行结果是不可控的
+		//所以在没有任何输入事件的情况下，不执行游戏逻辑，可以节省CPU资源
 		return
 	}
+
+	//派发条件事件，执行满足条件的 OnCond 处理器
 	p.scriptEvents.dispatchConditions()
 	if session != nil {
 		p.inputMgr.dispatchInputSessionTick(session)

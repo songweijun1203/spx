@@ -157,17 +157,16 @@ func onStart() {
 }
 
 // -----------------------------------------------------------------------------
-//总体调用逻辑
+// 总体调用逻辑
 // -----------------------------------------------------------------------------
-//1 缓存 C++ 输入和碰撞事件
-//2 准备输入与条件采样
-//3 推进 SPX 逻辑时钟
-//4 执行游戏帧准备及前置同步
-//5 读取所有游戏脚本协程
-//6 提交协程执行后的视觉状态
-//7 处理截图
-//8 结束录制/回放输入帧
-
+// 1 缓存 C++ 输入和碰撞事件
+// 2 准备输入与条件采样
+// 3 推进 SPX 逻辑时钟
+// 4 执行游戏帧准备及前置同步
+// 5 读取所有游戏脚本协程
+// 6 提交协程执行后的视觉状态
+// 7 处理截图
+// 8 结束录制/回放输入帧
 func onUpdate(delta float64) {
 	defer CheckPanic()
 	profiler.BeginSample()
@@ -180,7 +179,7 @@ func onUpdate(delta float64) {
 	//处理录制/回放输入
 	//采样 touching、keyPressed 等条件事件
 	//它放在 updateTime 之前，意味着条件采样使用的是时间推进前的本帧输入状态。
-	game.OnEngineBeforeUpdate(delta)
+	game.OnEngineBeforeUpdate(delta) //位于runtime_engine.go中，主要是处理输入和条件采样
 
 	//推进 SPX 逻辑时钟，会更新
 	// DeltaTime，TimeSinceLevelLoad，当前帧号 Frame，FPS，每调用一次，SPX 帧号增加 1
