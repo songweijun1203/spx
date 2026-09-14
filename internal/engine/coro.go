@@ -194,8 +194,13 @@ func NewControlFlowWaiter() func() {
 
 	thread := co.Current()
 	return func() {
+		// 普通 forever/repeat 每轮结束后进入 waitTypeLoop。这不是定时器事件：
+		// 它只是挂起当前脚本协程，让同一轮中的其他脚本先运行。若本帧仍有
+		// 时间预算且没有视觉更新请求，调度器可以在同一引擎帧再次恢复它。
 		if !thread.RunWithoutScreenRefresh() {
 			co.YieldLoopFor(thread)
+		// warp（不刷新屏幕）模式通常不在循环边界让出，以便批量完成计算；
+		// 连续运行超过安全预算时仍强制等到下一帧，避免彻底阻塞引擎。
 		} else if thread.ShouldWaitNextFrame(runWithoutScreenRefreshBudget) {
 			co.WaitNextFrameFor(thread)
 		}

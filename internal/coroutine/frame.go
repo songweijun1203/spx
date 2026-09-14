@@ -52,6 +52,9 @@ func (p *Coroutines) yieldAtFrame(me Thread, kind int) {
 
 // Admit a new round only after all runnable scripts have yielded.
 func (p *Coroutines) queueNextLoopRound(state *updateState) bool {
+	// waitTypeLoop 表示 forever/repeat 等脚本到达了一轮的边界。只有所有当前
+	// 可运行脚本都已让出、本帧没有请求重绘且仍在工作预算内，才在同一帧
+	// 开启下一轮；否则这些任务会在 Update 收尾时转入下一帧的队列。
 	if p.loopJobs.Count() == 0 || p.redrawFrame.Load() == state.frame || !stime.Now().Before(state.workDeadline) {
 		return false
 	}

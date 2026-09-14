@@ -86,8 +86,14 @@ func Forever(call func(), waitNextFrame func()) {
 	if call == nil {
 		return
 	}
+	// 这是 `.spx` forever 在运行时对应的实际无限循环。包含 forever 的
+	// OnStart/OnMsg/OnKey 等事件只负责启动一次脚本协程；后续每一轮不是新事件，
+	// 也不经过 eventLoop，而是在同一个协程恢复后继续执行。
 	for {
 		call()
+		// 名字保留了旧语义，当前传入的是控制流 waiter：普通模式在循环边界
+		// 产生 waitTypeLoop 并让出；调度器再决定同一引擎帧开启下一轮，还是
+		// 延迟到下一帧。若循环体内部执行 wait，则会先在 wait 处让出。
 		waitNextFrame()
 	}
 }

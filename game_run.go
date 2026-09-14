@@ -159,6 +159,9 @@ func Sched() int {
 }
 
 func Forever(call func()) {
+	// XGo 会把 `.spx` 中的 `forever => { ... }` 生成为对本函数的调用。
+	// Forever 不注册定时器或重复事件；它在当前脚本事件的协程中持续执行，
+	// 并由控制流 waiter 在每轮末尾把执行权交还给 SPX 协程调度器。
 	coreruntime.Forever(call, engine.NewControlFlowWaiter())
 }
 
