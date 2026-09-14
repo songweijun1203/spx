@@ -368,6 +368,7 @@ func (p *Game) doBroadcast(msg MsgName, data any, wait bool) {
 }
 
 // Event Routing
+// 键盘、鼠标、定时器、开始事件
 func (p *Game) handleEvent(ev event) {
 	switch e := ev.(type) {
 	case *eventLeftButtonUp:

@@ -135,7 +135,7 @@ func (b *gameBuilder) build() (*Game, error) {
 		setupConfig().
 		setupSystems().
 		loadSprites().
-		finalizeLoad()
+		finalizeLoad() //这个函数进入 到达sprite.main
 
 	return b.game, b.err
 }

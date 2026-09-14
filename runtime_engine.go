@@ -36,6 +36,7 @@ func (p *Game) OnEngineStart() {
 		generation := p.currentBootstrapGeneration()
 		go func() {
 			defer engine.CheckPanic()
+			//MainEntry 注册 main.spx 中的舞台事件
 			if me, ok := p.gamer.(interface{ MainEntry() }); ok {
 				p.deferBootstrapFor(generation, func() {
 					p.runBootstrapMainUntilYield(p, me.MainEntry)
@@ -179,6 +180,7 @@ func (p *Game) runBootstrapMainUntilYield(owner coroutine.ThreadObj, mainFn func
 	gco.JoinYieldedOrDone(thread)
 }
 
+// 调用SpriteMain 完成精灵事件注册
 func (p *Game) runBootstrapSpriteMainsUntilYield(inits []Sprite) {
 	if len(inits) == 0 {
 		return
@@ -194,7 +196,7 @@ func (p *Game) runBootstrapSpriteMainsUntilYield(inits []Sprite) {
 			continue
 		}
 
-		p.runBootstrapMainUntilYield(spr.pthis, ini.Main)
+		p.runBootstrapMainUntilYield(spr.pthis, ini.Main) //ini.Main 此处就是入口
 	}
 }
 
