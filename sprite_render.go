@@ -164,6 +164,8 @@ func (p *SpriteImpl) setCostume(costume any) {
 	}
 	p.spriteState.DefaultCostumeIndex = p.costumeIndex
 	p.markAutoPhysicsShapesDirty()
+	// 造型已在 Go 侧更新并标脏；对于可见精灵，markProxyDirty 还会调用
+	// RequestRedraw，使当前 forever 不再在同一引擎帧开启额外轮次。
 	p.markProxyDirty()
 }
 

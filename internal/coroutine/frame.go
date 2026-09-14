@@ -68,6 +68,9 @@ func (p *Coroutines) queueNextLoopRound(state *updateState) bool {
 
 // RequestRedraw ends additional script rounds after the current round finishes.
 func (p *Coroutines) RequestRedraw() {
+	// 只记录发生视觉修改的逻辑帧，不在这里直接绘制。当前脚本让出且所有
+	// 可运行脚本完成本轮后，queueNextLoopRound 会读取此标记；若等于当前帧，
+	// forever/repeat 的 waitTypeLoop 任务不会在本帧再次恢复。
 	p.redrawFrame.Store(time.Frame())
 }
 

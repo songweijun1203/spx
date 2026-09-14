@@ -107,6 +107,10 @@ func (p *SpriteImpl) setDying() {
 }
 
 func (p *SpriteImpl) markProxyDirty() {
+	// 可见精灵的位置、方向、大小、造型等发生变化时，记录“本帧需要重绘”。
+	// 这个标记不仅用于渲染，也会被 queueNextLoopRound 读取：一旦本帧请求
+	// 过重绘，普通 forever 到达循环边界后就留到下一引擎帧再继续。
+	// 隐藏精灵不影响当前画面，因此只保留脏状态，不要求结束同帧循环轮次。
 	p.requestRedrawIfVisible()
 	p.spriteState.DirtyVersion++
 	p.spriteState.IsDirty = true

@@ -85,6 +85,10 @@ updateLoop:
 		iterations++
 		switch p.nextUpdateAction(stats) {
 		case updateComplete:
+			// 当前待处理任务已经耗尽、也没有仍在执行的脚本。此时尝试把
+			// forever/repeat 在循环边界提交的 loopJobs 开成同帧下一轮。
+			// 只要本帧没有 RequestRedraw 且预算未耗尽，纯计算循环就能
+			// 在一次 gco.Update 中执行多轮。
 			if p.queueNextLoopRound(state) {
 				continue
 			}
@@ -188,6 +192,8 @@ func (p *Coroutines) runWaitJob(job *WaitJob) {
 
 func (p *Coroutines) promoteDeferredJobs(stats *UpdateJobsStats) {
 	start := stime.Now()
+	// 没能在当前帧开启下一轮的 loopJobs（例如已经 RequestRedraw），先并入
+	// deferredJobs，再整体放回 currentJobs，等待下一次 gco.Update 处理。
 	p.deferredJobs.Move(p.loopJobs)
 	stats.NextCount = p.deferredJobs.Count()
 	p.currentJobs.Move(p.deferredJobs)

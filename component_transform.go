@@ -112,6 +112,9 @@ func (t *transformComponent) onDestroy() {
 
 // markDirty marks the transform as dirty, triggering an update.
 func (t *transformComponent) markDirty() {
+	// set/change position、size、heading 等变换操作最终都会到这里。
+	// 除了记录稍后要同步给 C++ 的脏状态，markProxyDirty 还会为可见精灵
+	// 调用 RequestRedraw；协程调度器据此停止本帧额外的 forever 循环轮次。
 	t.isDirty = true
 	t.sprite.markProxyDirty()
 }
