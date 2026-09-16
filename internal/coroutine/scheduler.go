@@ -77,12 +77,16 @@ func (p *Coroutines) Yield(me Thread) {
 
 	me.suspendMu.Lock()
 	for me.suspendState == suspendStateSuspended && !p.isThreadCanceled(me) {
+		//条件成立，睡眠
 		me.suspendCond.Wait()
 	}
+
+	//处理临界资源
 	if me.suspendState == suspendStateSuspended {
 		me.suspendState = suspendStateRunning
 		me.suspended.Store(false)
 	}
+	//然后释放锁
 	me.suspendMu.Unlock()
 
 	// 第三步：收到 Resume 后这里只是结束条件变量等待。脚本还不能立即继续，
