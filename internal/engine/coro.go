@@ -119,7 +119,10 @@ func WaitYield() {
 }
 
 func WaitNextFrame() float64 {
+	// 消息事件的 Before 需要延期时会走到这里。gco.WaitNextFrame 不会创建新的
+	// Thread，而是让当前接收者 Thread 提交帧等待任务并在原调用栈上 Yield。
 	gco.WaitNextFrame()
+	// 恢复后已经进入后续引擎帧，返回该帧的 DeltaTime 给需要它的脚本 API。
 	return itime.DeltaTime()
 }
 
@@ -199,8 +202,8 @@ func NewControlFlowWaiter() func() {
 		// 时间预算且没有视觉更新请求，调度器可以在同一引擎帧再次恢复它。
 		if !thread.RunWithoutScreenRefresh() {
 			co.YieldLoopFor(thread)
-		// warp（不刷新屏幕）模式通常不在循环边界让出，以便批量完成计算；
-		// 连续运行超过安全预算时仍强制等到下一帧，避免彻底阻塞引擎。
+			// warp（不刷新屏幕）模式通常不在循环边界让出，以便批量完成计算；
+			// 连续运行超过安全预算时仍强制等到下一帧，避免彻底阻塞引擎。
 		} else if thread.ShouldWaitNextFrame(runWithoutScreenRefreshBudget) {
 			co.WaitNextFrameFor(thread)
 		}

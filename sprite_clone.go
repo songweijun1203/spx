@@ -44,6 +44,8 @@ func doClone(sprite Sprite, data any, onCloned func(sprite *SpriteImpl)) {
 		spxlog.Panicf("DoClone: sprite is nil")
 	}
 	src := spriteOf(sprite)
+	// 第一步只创建运行时克隆对象和它的原生代理。createRuntimeClone 内部会
+	// 重新执行克隆的 Main，让 OnCloned 等语句为新 owner 登记 event sink。
 	dest := createRuntimeClone(src)
 	if dest == nil {
 		return
@@ -52,6 +54,8 @@ func doClone(sprite Sprite, data any, onCloned func(sprite *SpriteImpl)) {
 	if onCloned != nil {
 		onCloned(dest)
 	}
+	// 第二步才触发 clone 生命周期事件。匹配到的每个 OnCloned sink 会由
+	// StartBatch 创建独立 Thread；不是在当前 Ground/创建者协程里直接调用。
 	dispatchCloneLifecycle(dest, data)
 }
 
@@ -111,6 +115,8 @@ func cloneSprite(out reflect.Value, outPtr Sprite, in reflect.Value, v coreproje
 		// Save top-level user fields first, then restore them without changing
 		// the existing out.Set(in) reference semantics.
 		userState := snapshotSpriteUserFields(out)
+		// Main 在这里的职责是为克隆对象重新登记事件 handler。此时仅产生
+		// event sink，不等于 OnCloned 已经运行，也还没有对应 Thread ID。
 		runMain(outPtr.Main)
 		restoreSpriteUserFields(out, userState)
 	}
@@ -156,6 +162,13 @@ func settableSpriteField(field reflect.Value) reflect.Value {
 }
 
 func dispatchCloneLifecycle(dest *SpriteImpl, data any) {
+	// doWhenCloned 使用 BatchWaitFirstSlice。若处理函数是：
+	//
+	//   setCostume; setGraphicEffect; wait 0.01; deleteThisClone
+	//
+	// 第一次执行片段会完成 setCostume/setGraphicEffect，并在 wait 处 Yield；
+	// 创建者随后才能离开克隆初始化。下一帧从 wait 后恢复并执行删除的，仍是
+	// 同一个 OnCloned Thread，而不是第二次触发 OnCloned。
 	defer dest.finishCloneInitialization()
 	if dest.spriteState.HasOnCloned {
 		dest.doWhenCloned(dest, data)

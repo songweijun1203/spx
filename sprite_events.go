@@ -27,6 +27,9 @@ func (p *SpriteImpl) OnCloned__0(onCloned func()) {
 }
 
 func (p *SpriteImpl) OnCloned__1(onCloned func(data any)) {
+	// 和 OnStart 一样，这里只把处理函数登记成 event sink，不会立即创建或
+	// 执行 onCloned 协程。克隆实例会重新执行 Main，并以克隆自己为 owner
+	// 登记一份 sink；真正 clone 事件发生时才创建一次性的 Thread 调用它。
 	p.spriteState.HasOnCloned = true
 	p.scriptEventRegistry.manager.AddCloned(coreevent.NewSink(p, onCloned, coreevent.MatchOwner(p)))
 }

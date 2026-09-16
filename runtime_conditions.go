@@ -40,10 +40,14 @@ func (p *scriptEventBindings) OnCond(__xgo_autoclosure_condition func() bool, on
 	))
 }
 
-// sampleConditions reads a consistent snapshot before the frame clock advances.
+// sampleConditions 在帧时钟推进前，对全部 OnCond 条件进行一次一致性采样。
+//
+// 条件读取可能访问脚本共享状态，因此存在协程管理器时通过 ReadScriptState
+// 暂停脚本写入。这里只把本次上升沿匹配的 sink 保存到 pendingConditions，
+// 不执行 handler，也不创建对应 Thread。
 func (p *scriptEventRegistry) sampleConditions() {
 	read := func() {
-		//取出所有注册在 BucketCondition 中的条件处理器，然后逐个执行条件判断
+		// 取出全部条件 sink，按 Scratch 目标顺序排列，并逐个执行 Cond 判断。
 		p.pendingConditions = matchingEventSinks(p.globalSinks(coreevent.BucketCondition), nil)
 	}
 	if gco == nil {
@@ -53,7 +57,10 @@ func (p *scriptEventRegistry) sampleConditions() {
 	}
 }
 
-// dispatchConditions starts matched handlers without reevaluating conditions.
+// dispatchConditions 异步启动上一次 sampleConditions 已经匹配的 OnCond handler。
+//
+// 它先取走并清空 pendingConditions，再直接调用 dispatchMatchedScriptEventBatch；
+// 因此不会在帧时钟推进后重复求值条件，handler 观察到的是采样阶段确定的触发结果。
 func (p *scriptEventRegistry) dispatchConditions() {
 	sinks := p.pendingConditions
 	p.pendingConditions = nil
