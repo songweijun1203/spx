@@ -83,6 +83,9 @@ void SpxPen::_start_new_line() {
 }
 
 void SpxPen::_append_current_point_if_needed(GdVec2 position) {
+	// 每次精灵移动都会先更新笔尖当前位置；抬笔时只记位置，不生成线段。
+	// 因此脚本可在首次按下鼠标时先 setXYpos，再 penDown，而不会从精灵原来
+	// 所在的位置拖出一条不需要的连接线。
 	current_pen_pos = position;
 	if (!is_pen_down) {
 		return;
@@ -91,9 +94,11 @@ void SpxPen::_append_current_point_if_needed(GdVec2 position) {
 
 	if (has_last_draw_pos) {
 		float distance = last_draw_pos.distance_to(draw_position);
+		// 过滤小于 1 个世界单位的抖动和重复采样，避免零长度命令持续堆积。
 		if (distance < min_draw_distance) {
 			return;
 		}
+		// 连续笔画的核心：把上次接受的采样点与本次点连成一个线段。
 		_draw_line(last_draw_pos, draw_position, pen_properties.size, _get_current_color(), needs_start_cap);
 	} else {
 		_draw_line(draw_position, draw_position, pen_properties.size, _get_current_color(), true);
@@ -164,6 +169,9 @@ void SpxPen::move_to(GdVec2 position) {
 void SpxPen::on_down(GdBool p_move_by_mouse) {
 	move_by_mouse = p_move_by_mouse;
 	const Vector2 draw_position = _get_draw_position(current_pen_pos, pen_properties.size);
+	// 落笔立即画一个圆点，使“只点击但没有移动”也有可见结果，并把该点
+	// 保存为后续 move_to 的线段起点。重复 on_down 会再次绘制当前点，所以上层
+	// 鼠标绘图脚本应只在按键状态从松开变为按下时调用 PenDown。
 	_draw_line(draw_position, draw_position, pen_properties.size, _get_current_color(), true);
 	last_draw_pos = draw_position;
 	has_last_draw_pos = true;
@@ -172,6 +180,8 @@ void SpxPen::on_down(GdBool p_move_by_mouse) {
 }
 
 void SpxPen::on_up() {
+	// 清除上一采样点，保证下一次落笔开启新笔画，不会跨越松开期间的移动
+	// 把两次独立的鼠标拖动画成一条线。
 	is_pen_down = false;
 	has_last_draw_pos = false;
 	needs_start_cap = true;

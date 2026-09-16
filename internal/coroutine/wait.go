@@ -231,7 +231,12 @@ func (p *Coroutines) enqueueAndYield(me Thread, job *WaitJob) {
 	// 消费、线程随后才进入阻塞，从而丢失一次唤醒。
 	p.schedulerMu.Lock()
 	p.setThreadStateLocked(me, threadBlocked)
+	// [WaitJob 流程 1] 新 Job 的第一个落点是 currentJobs 队尾。这里的入队并不
+	// 表示立刻恢复：Update 之后从队头取到它时，还要根据 Type、Frame、Time
+	// 判断是恢复 Thread，还是转入 deferredJobs/loopJobs。
 	p.currentJobs.PushBack(job)
+	// 这里唤醒的是等待“队列/Thread 状态变化”的调度器 schedulerCond，不是
+	// 当前脚本自己的 suspendCond；脚本自己的唤醒发生在 runWaitJob -> Resume。
 	p.schedulerCond.Signal()
 	p.schedulerMu.Unlock()
 	// 入队只建立了恢复条件；Yield 才真正释放 runMu 并挂起当前 Go goroutine。

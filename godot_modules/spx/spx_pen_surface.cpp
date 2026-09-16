@@ -32,6 +32,8 @@
 #include "servers/rendering_server.h"
 
 void SpxPenCanvas::_draw_line_batch(int p_begin, int p_end) {
+	// 一条逻辑线段被展开为矩形主体和圆形端帽，再作为三角形数组一次提交给
+	// RenderingServer。这样能保持 Scratch 风格的圆头线条，并减少逐线 draw 调用。
 	constexpr int CAP_SEGMENTS = 12;
 	constexpr int DISC_VERTEX_COUNT = CAP_SEGMENTS + 1;
 	constexpr int DISC_INDEX_COUNT = CAP_SEGMENTS * 3;
@@ -161,6 +163,8 @@ void SpxPenCanvas::_notification(int p_what) {
 }
 
 void SpxPenCanvas::add_line(const Vector2 &p_from, const Vector2 &p_to, float p_width, const Color &p_color, bool p_draw_start_cap) {
+	// 此处仍只记录绘制命令；真正生成顶点发生在下一次 NOTIFICATION_DRAW。
+	// SubViewport 会保留已经栅格化的像素，所以旧笔迹无需每帧重新构建。
 	DrawCommand command;
 	command.type = DrawCommand::LINE;
 	command.from = p_from;
@@ -241,6 +245,8 @@ void SpxPenSurface::set_canvas_size(const Size2i &p_size) {
 
 void SpxPenSurface::draw_line(const Vector2 &p_from, const Vector2 &p_to, float p_width, const Color &p_color, bool p_draw_start_cap) {
 	ERR_FAIL_NULL(canvas);
+	// SPX 世界坐标原点位于舞台中心，而 SubViewport 画布原点位于左上角。
+	// 加上半个画布尺寸后，mouseX/mouseY 驱动的精灵轨迹才能落到正确像素。
 	const Vector2 canvas_origin = Vector2(canvas_size) * 0.5f;
 	canvas->add_line(p_from + canvas_origin, p_to + canvas_origin, p_width, p_color, p_draw_start_cap);
 	dirty = true;
@@ -269,6 +275,8 @@ void SpxPenSurface::flush() {
 		return;
 	}
 
+	// 普通帧使用 CLEAR_MODE_NEVER 累积笔迹；只有 erase/reset/画布尺寸变化
+	// 才清空一次。queue_redraw 把本帧新增线段真正栅格化到透明纹理上。
 	render_target->set_clear_mode(clear_requested ? SubViewport::CLEAR_MODE_ONCE : SubViewport::CLEAR_MODE_NEVER);
 	canvas->queue_redraw();
 	render_target->set_update_mode(SubViewport::UPDATE_ONCE);

@@ -141,6 +141,9 @@ func (p *Game) KeyPressed(key Key) bool {
 }
 
 func (p *Game) MouseX() float64 {
+	// 返回输入循环在当前逻辑帧缓存的 SPX 世界坐标，而不是窗口像素坐标。
+	// 回放输入时 effectiveMousePos 会改为读取录制数据，因此用 mouseX/mouseY
+	// 驱动的画笔在实时运行和回放时会走完全相同的精灵移动链路。
 	return p.inputMgr.effectiveMousePos().X
 }
 
@@ -149,6 +152,9 @@ func (p *Game) MouseY() float64 {
 }
 
 func (p *Game) MousePressed() bool {
+	// 实时模式下左键或右键任意一个按下都会返回 true；该值表示“持续按住”，
+	// 并不是只在按下瞬间为 true。鼠标绘图脚本应自行记录上一帧是否在绘制，
+	// 只在 false -> true 时 PenDown，在 true -> false 时 PenUp。
 	return p.inputMgr.effectiveMousePressed()
 }
 

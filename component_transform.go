@@ -305,8 +305,13 @@ func (t *transformComponent) setPositionRaw(x, y float64) {
 	t.x, t.y = x, y
 }
 
-// moveTo moves the sprite to the specified position, handling pen movement
-// and transform updates.
+// moveTo 是精灵位置变化与画笔系统的汇合点。
+//
+// 顺序不能交换：movePen 必须在覆盖 t.x/t.y 之前执行。落笔时，C++ 画笔
+// 已保存上一个采样点；这里把目标坐标加入画笔命令队列，后端便可连接
+// “上一个点 -> 新点”。随后再更新精灵坐标并标记渲染代理为脏数据。
+// 因此鼠标绘图并不是鼠标直接向画布写像素，而是脚本先执行
+// SetXYpos(mouseX, mouseY)，再由精灵移动间接生成线段。
 func (t *transformComponent) moveTo(x, y float64) {
 	x, y = t.fixWorldRange(x, y)
 	t.sprite.movePen(x, y)

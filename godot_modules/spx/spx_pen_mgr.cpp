@@ -135,7 +135,10 @@ void SpxPenMgr::batch_update_commands(const float *buffer_data, int len) {
 		return;
 	}
 
-	// Format: [count] + count x [op, idLowBits, idHighBits, a, b, c, d, reserved].
+	// Go 帧尾传来的格式：
+	// [命令数] + N * [操作码, ID低位, ID高位, a, b, c, d, 保留位]。
+	// 鼠标移动可能每帧产生一个 move；批量解码能把一帧内的样式、落笔、
+	// 多个移动点和抬笔按原顺序送给同一个 SpxPen，且只跨语言调用一次。
 	if (buffer_data == nullptr || len < 1) {
 		return;
 	}
@@ -171,6 +174,8 @@ void SpxPenMgr::batch_update_commands(const float *buffer_data, int len) {
 			continue;
 		}
 
+		// 不合并相邻 move，也不按画笔分组：全局顺序决定线段从哪里开始、
+		// 在哪里结束，以及颜色/粗细从哪一段起生效。
 		const int command = (int)record[0];
 		switch (command) {
 			case SPX_PEN_BATCH_MOVE:

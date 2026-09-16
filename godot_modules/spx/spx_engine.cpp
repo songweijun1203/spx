@@ -225,6 +225,9 @@ void SpxEngine::on_update(float delta) {
 	_notify_managers_update(delta);
 
 	if (callbacks.func_on_engine_update) {
+		// Go 回调内部会运行 SPX 脚本，并在 OnEngineRender 收尾时把本帧的
+		// move/down/up 等批量命令送入 SpxPen。必须等回调返回后再 flush，
+		// 此时本帧鼠标轨迹才完整，画布也只需触发一次 SubViewport 更新。
 		callbacks.func_on_engine_update(delta);
 	}
 

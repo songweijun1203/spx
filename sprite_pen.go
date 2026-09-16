@@ -32,10 +32,15 @@ const (
 // -----------------------------------------------------------------------------
 // Pen
 // -----------------------------------------------------------------------------
+// PenUp 结束当前笔画。抬笔后精灵仍可移动，但移动不会产生线段；下一次
+// PenDown 会从当时的精灵位置开始一条新笔画。
 func (p *SpriteImpl) PenUp() {
 	p.pen().penUp()
 }
 
+// PenDown 把当前精灵当作“笔尖”落到共享画布上。它只切换画笔状态并在
+// 当前点画一个圆点，真正的连续线段由之后的 SetXYpos/step/glide 等移动
+// 操作触发。因此用鼠标绘图时应先把精灵移到 mouseX/mouseY，再调用 PenDown。
 func (p *SpriteImpl) PenDown() {
 	p.pen().penDown()
 }
@@ -90,5 +95,7 @@ func (p *SpriteImpl) ChangePenSize(delta float64) {
 // Internals
 // -----------------------------------------------------------------------------
 func (p *SpriteImpl) movePen(x, y float64) {
+	// 所有会改变精灵逻辑坐标的入口最终都会经过这里。penComponent 仅在
+	// 落笔状态下转发目标坐标，所以普通移动不需要为画笔做额外判断。
 	p.pen().movePen(x, y)
 }

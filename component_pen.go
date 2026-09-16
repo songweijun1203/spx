@@ -55,6 +55,9 @@ type penComponent struct {
 	penTransparency float64
 
 	// Runtime state.
+	// isPenDown 是 Go 侧的逻辑落笔状态，用于决定精灵移动是否要生成画笔命令。
+	// penObj 是 C++ 侧 SpxPen 的句柄，采用懒创建：从未用过画笔的精灵不会
+	// 占用后端对象。克隆会继承落笔/样式状态，但拥有自己的后端画笔对象。
 	isPenDown bool
 	penObj    *engine.Object
 }
@@ -101,6 +104,7 @@ func (p *penComponent) onDestroy() {
 // ============================================================================
 
 func (p *penComponent) penUp() {
+	// 重复抬笔直接忽略，同时也不会仅为了 PenUp 创建一个无用的后端画笔。
 	if !p.isPenDown {
 		return
 	}
@@ -112,12 +116,18 @@ func (p *penComponent) penUp() {
 }
 
 func (p *penComponent) penDown() {
+	// 落笔本身会在当前坐标画出一个圆点，所以即使精灵不移动也需要重绘。
 	scheduler.RequestRedraw()
 	wasDown := p.isPenDown
 	created := p.checkOrCreatePen()
+	// 新建画笔，或从抬笔切换到落笔时，先把 Go 侧保存的粗细和颜色同步过去。
+	// 已经落笔时重复 PenDown 仍会发给后端，以保持“再画一次当前点”的语义，
+	// 但不必重复发送没有变化的样式。
 	if !wasDown || created {
 		p.syncPenAppearance()
 	}
+	// 命令顺序是 size/color -> move -> down。先定位到精灵当前逻辑坐标，
+	// 再落笔，可防止新笔画从后端画笔的默认位置连接过来。
 	x, y := p.sprite.getXY()
 	p.syncPenPosition(x, y)
 	p.isPenDown = true
@@ -284,6 +294,8 @@ func (p *penComponent) changePenTransparency(delta float64) {
 
 func (p *penComponent) checkOrCreatePen() bool {
 	if p.penObj == nil {
+		// CreatePen 必须立即返回对象句柄，无法放进只负责“无返回值命令”的
+		// PenSyncBuffer；后续移动、落笔和样式更新都通过该句柄找到同一支笔。
 		obj := p.engine().PenMgr.CreatePen()
 		p.penObj = &obj
 		p.penTransparency = alphaToTransparency(p.penColor.A)
@@ -303,10 +315,14 @@ func (p *penComponent) destroyPen() {
 }
 
 func (p *penComponent) movePen(x, y float64) {
+	// transformComponent 会把每次位置变化都送到这里，但只有落笔期间才需要
+	// 记录轨迹。x/y 是已经过舞台边界修正的目标逻辑坐标。
 	if !p.isPenDown {
 		return
 	}
 	scheduler.RequestRedraw()
+	// 克隆可能继承 isPenDown，却还没有自己的 penObj；第一次移动时在此补齐
+	// 后端对象、样式、起点和落笔状态，然后再追加本次目标点。
 	p.ensureClonePenReady()
 	p.syncPenPosition(x, y)
 }
@@ -315,6 +331,8 @@ func (p *penComponent) syncPenPosition(x, y float64) {
 	if p.penObj == nil {
 		return
 	}
+	// 线条跟随的是精灵的逻辑位置，不叠加服装的旋转中心/渲染偏移；这样
+	// mouseX/mouseY、精灵位置和画笔位置始终处于同一个 SPX 世界坐标系。
 	p.sprite.g.queuePenMove(*p.penObj, mathf.NewVec2(x, y))
 }
 
@@ -375,6 +393,8 @@ func (p *penComponent) ensureClonePenReady() {
 	if !created || !p.isPenDown {
 		return
 	}
+	// 克隆第一次移动时，先在旧坐标建立起点，再进入落笔状态；调用者随后
+	// 会发送新坐标，于是后端能画出从克隆当前位置到目标位置的第一段线。
 	p.syncPenAppearance()
 	x, y := p.sprite.getXY()
 	p.syncPenPosition(x, y)

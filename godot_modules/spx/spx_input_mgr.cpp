@@ -59,6 +59,9 @@ void SpxInputMgr::on_reset(int reset_code) {
 
 // input
 GdVec2 SpxInputMgr::get_global_mouse_pos() {
+	// 先通过 Camera2D 获得鼠标所在的世界坐标（已包含相机平移/缩放），再由
+	// godot_to_spx_vec2 转成 SPX 逻辑坐标。Go 脚本看到的 mouseX/mouseY
+	// 因而可以直接传给 setXYpos，不需要再次做窗口或相机坐标换算。
 	auto mouse_pos = cameraMgr->get_global_mouse_position();
 	return godot_to_spx_vec2(mouse_pos);
 }

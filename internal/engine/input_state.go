@@ -144,6 +144,9 @@ func onKeyReleased(id int64) {
 }
 
 func onMousePressed(id int64) {
+	// 调用链入口来自 Godot/GDExtension 的鼠标按钮回调。这里不直接执行游戏
+	// 脚本，只更新可跨协程读取的按住状态；Game.MousePressed 最终读取的就是
+	// mouseButtonStates，因此按住期间每个脚本帧都能得到 true。
 	queueMouseEvent(id, true)
 }
 
@@ -161,6 +164,8 @@ func queueMouseEvent(id int64, pressed bool) {
 		return
 	}
 	setMouseButtonPressed(id, pressed)
+	// 边沿事件只服务于输入录制/回放等需要精确顺序的场景。即使没有开启
+	// capture，上面的原子按住状态仍会更新，不影响实时鼠标绘图轮询。
 	if mouseEventCaptureEnabled {
 		mouseEventsTemp = append(mouseEventsTemp, MouseEvent{Id: id, IsPressed: pressed})
 	}

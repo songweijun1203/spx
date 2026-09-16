@@ -21,6 +21,10 @@ import (
 	"github.com/goplus/spx/v3/internal/engine"
 )
 
+// 下列 queuePen* 方法是 Go 游戏逻辑到 Godot/C++ 画笔系统的统一出口。
+// Web/WASM 环境下每次跨边界调用成本较高，因此启用 penSyncBuffer 时先按
+// 原始发生顺序缓存 move/down/up/color/size，并在帧尾一次性提交。未启用
+// 缓冲的测试或纯 Go 环境则直接调用 PenMgr，二者的可观察顺序保持一致。
 func (p *Game) queuePenMove(obj engine.Object, position mathf.Vec2) {
 	if p.penSyncBuffer == nil {
 		p.engine().PenMgr.MovePenTo(obj, position)
@@ -33,6 +37,9 @@ func (p *Game) queuePenMove(obj engine.Object, position mathf.Vec2) {
 
 func (p *Game) queuePenDown(obj engine.Object, moveByMouse bool) {
 	if moveByMouse {
+		// C++ 的 moveByMouse 模式会在 Godot 更新阶段自行读取鼠标坐标，不能
+		// 与队列中的旧 move 命令乱序，所以先通过 barrier 冲刷已有命令。
+		// 当前公开的 Sprite.PenDown 传 false，鼠标绘图仍由脚本移动精灵驱动。
 		p.penCommandBarrier(func() {
 			p.engine().PenMgr.PenDown(obj, true)
 		})
@@ -81,6 +88,7 @@ func (p *Game) flushPenCommands() {
 	if p.penSyncBuffer == nil {
 		return
 	}
+	// BatchUpdateCommands 是一次同步调用；返回后缓冲区才可复用。
 	p.penSyncBuffer.Flush(p.engine().PenMgr.BatchUpdateCommands)
 }
 
@@ -95,5 +103,7 @@ func (p *Game) penCommandBarrier(operation func()) {
 		operation()
 		return
 	}
+	// stamp、销毁画笔、调整画布等不能编码进批处理。Barrier 保证它们之前
+	// 产生的线段先提交，避免出现“先销毁后移动”或“清屏后旧线又出现”。
 	p.penSyncBuffer.Barrier(p.engine().PenMgr.BatchUpdateCommands, operation)
 }

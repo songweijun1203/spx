@@ -115,12 +115,20 @@ type Coroutines struct {
 	// threadStates 只记录调度角度的 runnable/blocked。runnable 的含义是
 	// “允许继续运行”，并不等于“此刻已经获得 runMu 正在执行”。
 	threadStates map[Thread]threadState
-	// currentJobs 是本次 Update 正在从队头检查的 WaitJob 队列。
+	// [WaitJob 流程 1] currentJobs 是本次 Update 正在从队头检查的 WaitJob 队列。
+	// Wait/WaitNextFrame/WaitYield/循环边界创建 Job 后，通常先把它追加到这里；
+	// 上一帧未满足条件的 deferredJobs 和 loopJobs 也会在帧末搬回这里，等待
+	// 下一次 Update 重新检查。
 	currentJobs *Queue[*WaitJob]
-	// deferredJobs 保存时间尚未到或必须留到后续帧再次检查的 WaitJob。
+	// [WaitJob 流程 4B] deferredJobs 保存本次 Update 检查后仍未满足帧号或时间
+	// 条件的 WaitJob。runUpdateLoop 不会在同一次 Update 再读取这个队列；只有
+	// promoteDeferredJobs 在收尾时把它搬回 currentJobs，所以下次检查至少发生
+	// 在下一次 gco.Update。
 	deferredJobs *Queue[*WaitJob]
-	// loopJobs 保存 forever/repeat 到达循环边界后提交的续跑任务。若本帧没有
-	// 请求重绘且预算充足，它们可以转回 currentJobs，在同一物理帧再执行一轮。
+	// [WaitJob 流程 4C] loopJobs 保存 forever/repeat 在“当前物理帧”到达循环
+	// 边界后提交的续跑任务。currentJobs 和 runnable Thread 清空后，调度器才
+	// 判断是否开启下一脚本轮次：若本帧没有请求重绘且预算充足，它们转回
+	// currentJobs，在同一物理帧再执行一轮；否则帧末并入 deferredJobs。
 	loopJobs *Queue[*WaitJob]
 	// redrawFrame 记录最近一次 RequestRedraw 对应的引擎帧号。它用于阻止
 	// 普通循环在已经产生视觉变化的同一帧继续开启额外轮次。

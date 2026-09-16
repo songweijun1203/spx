@@ -74,9 +74,18 @@ func (p *Coroutines) queueNextLoopRound(state *updateState) bool {
 	// waitTypeLoop 表示 forever/repeat 等脚本到达了一轮的边界。只有所有当前
 	// 可运行脚本都已让出、本帧没有请求重绘且仍在工作预算内，才在同一帧
 	// 开启下一轮；否则这些任务会在 Update 收尾时转入下一帧的队列。
+	// [WaitJob 流程 6A] 任一条件成立都不能在当前物理帧开启下一脚本轮次：
+	//   1. 没有循环任务；
+	//   2. 本帧已经 RequestRedraw，需要先把视觉结果交给渲染阶段；
+	//   3. 本帧循环工作预算已经耗尽。
+	// 返回 false 后，runUpdateLoop 退出，promoteDeferredJobs 会把现有 loopJobs
+	// 搬到下一次 gco.Update 的 currentJobs。
 	if p.loopJobs.Count() == 0 || p.redrawFrame.Load() == state.frame || !stime.Now().Before(state.workDeadline) {
 		return false
 	}
+	// [WaitJob 流程 6B] 允许同帧继续：依照 loopJobs 队列顺序逐个取出，把类型
+	// 改成没有帧门槛的 waitTypeYield，再追加回 currentJobs。这里没有推进
+	// time.Frame，因此这是同一物理帧的下一“脚本轮次”。
 	for p.loopJobs.Count() > 0 {
 		job := p.loopJobs.PopFront()
 		// 改成无帧门槛的 waitTypeYield 后重新进入 currentJobs，所以接下来仍在

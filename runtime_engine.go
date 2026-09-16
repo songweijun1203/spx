@@ -118,6 +118,9 @@ func (p *Game) OnEngineUpdate(delta float64) {
 }
 
 func (p *Game) OnEngineRender(delta float64) {
+	// 游戏脚本协程在 OnEngineUpdate 与这里之间运行。鼠标绘图脚本在协程中
+	// 调用 SetXYpos/PenDown/PenUp 后，defer 会在本帧收尾时按原顺序一次性
+	// 把命令交给 C++；即使下面因游戏尚未运行而提前返回，也不会漏掉队列。
 	defer p.flushPenCommands()
 	if !p.lifecycleState.IsRunned.Load() {
 		return
