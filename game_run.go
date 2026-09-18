@@ -159,6 +159,9 @@ func Sched() int {
 }
 
 func Forever(call func()) {
+	// .spx 的 forever 从这里进入运行时。NewControlFlowWaiter 捕获当前脚本
+	// Thread，并作为每轮结束后的 yield 回调传入；因此循环每一轮都复用同一个
+	// Thread，具体能否在当前物理帧继续由协程调度器决定。
 	coreruntime.Forever(call, engine.NewControlFlowWaiter())
 }
 
@@ -166,7 +169,7 @@ func Repeat(loopCount int, call func()) {
 	coreruntime.Repeat(loopCount, call, engine.NewControlFlowWaiter())
 }
 
-// The __xgo_autoclosure_ prefix preserves XGo's command-style condition syntax.
+// __xgo_autoclosure_ 前缀用于保留 XGo 命令式写法中的条件语法。
 func RepeatUntil(__xgo_autoclosure_condition func() bool, call func()) {
 	coreruntime.RepeatUntil(__xgo_autoclosure_condition, call, engine.NewControlFlowWaiter())
 }

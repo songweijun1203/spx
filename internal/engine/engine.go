@@ -211,14 +211,20 @@ func onUpdate(delta float64) {
 	cacheKeyEvents()
 	cacheMouseEvents()
 	game.OnEngineBeforeUpdate(delta)
+	// 每次引擎 onUpdate 只在这里推进一次物理帧号。后面的 gco.Update 即使批准
+	// 多个同帧脚本轮次，也不会再次调用 time.Update，因此它们仍属于同一物理帧。
 	updateTime(delta)
 	profiler.MeasureFunctionTime("GameUpdate", func() {
 		game.OnEngineUpdate(delta)
 	})
 	profiler.MeasureFunctionTime("CoroUpdateJobs", func() {
+		// 这里同步进入协程调度器。gco.Update 会与脚本 Thread 接力，直到当前轮
+		// 安静且无法/无需再开同帧下一轮，才返回到这个引擎调用栈。
 		gco.Update()
 	})
 	profiler.MeasureFunctionTime("GameRender", func() {
+		// RequestRedraw 本身不在调用点立即绘制。调度器返回后，视觉状态才在这个
+		// 阶段同步给渲染侧；这就是发生重绘时要停止同帧额外脚本轮次的原因。
 		game.OnEngineRender(delta)
 	})
 	if err := FlushCaptures(); err != nil {

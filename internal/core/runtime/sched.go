@@ -86,8 +86,20 @@ func Forever(call func(), yield func()) {
 	if call == nil {
 		return
 	}
+	// Forever 本身只实现“执行一次循环体，再调用一次协作式 yield”的结构。
+	// 它不会创建新的 Thread，也不会自己计算帧时间；具体 yield 行为由调用方
+	// 注入。SPX 传入的是 engine.NewControlFlowWaiter：普通模式调用 YieldLoopFor；
+	// Warp 模式在独立预算未到时直接返回，预算到期后才调用 WaitNextFrameFor。
 	for {
+		// call 返回后才到达循环边界。若循环体内部执行了可视状态修改，相关 API
+		// 会调用 RequestRedraw，调度器会在本轮结束后禁止同帧下一轮。
 		call()
+		// yield 让出当前 Thread。普通模式创建 waitTypeLoop Job；没有重绘且
+		// beginUpdate 建立的共享 workDeadline 尚未到期时，该 Job 可能在本物理帧
+		// 的下一脚本轮次恢复。
+		// yield 正常返回，表示同一个 Thread 已经被调度器重新 Resume 并重新取得
+		// runMu。Go for 才从这里回到循环顶部，再执行下一次 call；因此同帧多轮
+		// 本质上是同一个调用栈在 Yield 内睡眠后继续，不是递归，也不是创建新协程。
 		yield()
 	}
 }
@@ -98,6 +110,8 @@ func Repeat(loopCount int, call func(), yield func()) {
 	}
 	for range loopCount {
 		call()
+		// Repeat 的每轮边界与 Forever 相同：是否同帧继续由注入的 yield 和
+		// 协程调度器决定，而不是 Go for 循环直接连续执行到底。
 		yield()
 	}
 }

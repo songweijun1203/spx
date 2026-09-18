@@ -118,6 +118,8 @@ func (p *scriptEventRegistry) dispatchStartEventBatch(sinks []eventSink, event s
 		return
 	}
 
+	// 记录构造本次 OnStart 接收者快照时的 StopAll 代次。已经登记但尚未开始的
+	// OnStart Thread 不会被 StopAll 立即取消；它们仍需按快照顺序获得一次执行片段。
 	baseline := p.stopAllEpoch.Load()
 	tasks := make([]coroutine.Task, len(matched))
 	threads := make([]coroutine.Thread, 0, len(matched))
@@ -137,6 +139,10 @@ func (p *scriptEventRegistry) dispatchStartEventBatch(sinks []eventSink, event s
 		task.Run = func(thread coroutine.Thread) {
 			p.pendingStartThreads.Delete(thread)
 			if p.stopAllEpoch.Load() != baseline {
+				// 从快照建立到该 Thread 真正启动之间发生过 StopAll。允许它执行第一个
+				// 连续脚本片段，以排空既有 OnStart 快照；但预约在首次 Yield 时彻底
+				// 终止，因此它不会越过 Wait/循环边界继续执行。若处理函数不 Yield 而
+				// 直接返回，则按正常完成处理，无需再取消一个已经结束的 Thread。
 				gco.StopAtNextYield(thread)
 			}
 			run(thread)

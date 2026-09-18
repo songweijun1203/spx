@@ -110,7 +110,7 @@ func Execute(owner any, fn func(ctx context.Context, owner any)) {
 		call()
 		return 0
 	})
-	// Thread completion also covers cancellation before the callback starts.
+	// Thread 结束也覆盖回调尚未开始前就被取消的情况。
 	co.Join(thread)
 }
 
@@ -159,7 +159,7 @@ func RunWithoutScreenRefresh(call func()) {
 	call()
 }
 
-// RunStopThisScript consumes stop-this-script signals at a procedure boundary.
+// RunStopThisScript 在过程边界消费“停止当前脚本”的信号。
 func RunStopThisScript(call func()) {
 	if call == nil {
 		return
@@ -186,11 +186,14 @@ func ShouldWaitNextFrame() bool {
 	return gco.Current().ShouldWaitNextFrame(runWithoutScreenRefreshBudget)
 }
 
-// NewControlFlowWaiter caches the calling thread for generated loop yields.
+// NewControlFlowWaiter 为编译器生成的 Forever/Repeat 循环创建一个边界回调。
+// 它捕获创建时的 Thread，因此循环每次调用 yield 时都让出同一个脚本 Thread，
+// 不会因为循环轮次而创建新 Thread。
 func NewControlFlowWaiter() func() {
 	co := gco
 	if co == nil || !co.IsInCoroutine() {
-		// Preserve validation outside managed coroutines.
+		// 协程外没有可捕获的 Thread，保留原有校验/降级语义：需要等待时走
+		// 普通的 WaitNextFrame，否则不尝试操作协程调度器。
 		return func() {
 			if ShouldWaitNextFrame() {
 				WaitNextFrame()
@@ -200,15 +203,23 @@ func NewControlFlowWaiter() func() {
 
 	thread := co.Current()
 	return func() {
+		// 普通模式每轮使用 waitTypeLoop。它只保证当前脚本让出执行权；在同一
+		// 物理帧没有 RequestRedraw 且共享 workDeadline 未到期时，调度器可以
+		// 把它安排到下一脚本轮次继续。
 		if !thread.RunWithoutScreenRefresh() {
+			// YieldLoopFor 一定会真正 Yield。是否本帧恢复由 Coroutines.Update 在
+			// 当前脚本轮结束后决定，不能把它理解成这里直接判断后继续 Go for。
 			co.YieldLoopFor(thread)
 		} else if thread.ShouldWaitNextFrame(runWithoutScreenRefreshBudget) {
+			// Warp/不刷新屏幕模式使用独立的 500ms 协作预算。普通模式的 25ms
+			// 同帧轮次预算不适用于 Warp；Warp 预算耗尽后才跨到下一物理帧。
 			co.WaitNextFrameFor(thread)
 		}
 	}
 }
 
-// RequestRedraw marks a visual change for cooperative script scheduling.
+// RequestRedraw 标记本帧发生了视觉变化，调度器会在当前脚本轮结束后停止
+// 开启同一物理帧的额外 Forever/Repeat 轮次。它只设置调度标记，不立即绘制。
 func RequestRedraw() {
 	if gco != nil {
 		gco.RequestRedraw()

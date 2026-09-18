@@ -68,15 +68,28 @@ type Coroutines struct {
 	workerCount      int
 	lifecycleChanged chan struct{} // Created lazily by drains; closed on removal.
 
-	// schedulerMu guards runnable state and atomic state/queue publication.
-	schedulerMu     sync.Mutex
-	schedulerCond   *sync.Cond
-	runnableThreads map[Thread]struct{} // Cancellation is checked before execution.
-	currentJobs     *Queue[*WaitJob]
-	deferredJobs    *Queue[*WaitJob]
-	roundJobs       *Queue[*WaitJob]
-	redrawFrame     atomic.Int64
-	scriptRound     atomic.Uint64
+	// schedulerMu 保护“Thread 是否仍可运行”以及 Thread 状态与 WaitJob 的原子发布。
+	// schedulerCond 的唯一等待方是 Coroutines.Update；脚本 Thread 在入队、阻塞、
+	// 恢复或结束时 Signal，通知 Update 重新检查下面这些状态。
+	schedulerMu   sync.Mutex
+	schedulerCond *sync.Cond
+	// runnableThreads 包含已经获得运行资格、但可能仍在竞争 runMu 或执行用户代码的
+	// Thread。Update 看到它非空时不能宣布当前脚本轮次结束。
+	runnableThreads map[Thread]struct{}
+	// currentJobs 是本次 Update 现在可以检查/处理的任务队列。Thread 到达 wait、
+	// yield 或 forever 边界时，先把对应 WaitJob 放到这里。
+	currentJobs *Queue[*WaitJob]
+	// deferredJobs 暂存本物理帧尚不满足条件的 waitTypeFrame/waitTypeTime Job。
+	// Update 结束时它会与 roundJobs 合并，再整体移回 currentJobs，供下帧检查。
+	deferredJobs *Queue[*WaitJob]
+	// roundJobs 暂存“本物理帧的当前脚本轮次已经执行完一轮”的 waitTypeLoop 和
+	// waitTypeNextRound Job。它们不能刚入队就恢复，必须等待整轮脚本都让出。
+	roundJobs *Queue[*WaitJob]
+	// redrawFrame 保存最近一次 RequestRedraw 所在的物理帧。只要它等于当前
+	// updateState.frame，本物理帧就不再批准额外脚本轮次。
+	redrawFrame atomic.Int64
+	// scriptRound 统计已批准的同帧额外脚本轮次；增加它不会推进物理帧号或时间。
+	scriptRound atomic.Uint64
 
 	nextJobID    atomic.Int64
 	nextThreadID atomic.Int64
