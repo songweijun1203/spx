@@ -44,6 +44,7 @@ let enlarged = false
 let replayStatusPollTimer = 0
 let replayStatusPollVersion = 0
 
+// 浏览器页面级总入口。最近调用方：浏览器 load 事件分发器；不存在更上层的项目函数调用者。
 window.addEventListener('load', () => {
 	animateBox()
 	runUIAction('initialize engine', initializeRuntime)
@@ -154,6 +155,10 @@ function renderRuntimeControls() {
 
 renderRuntimeControls()
 
+/**
+ * 初始化可复用的底层引擎，但不下载、编译或启动 game.zip 中的具体游戏。
+ * 最近调用方：window.load 监听器；最顶层入口：浏览器完成页面及 iframe 加载。
+ */
 async function initializeRuntime() {
 	try {
 		configureRunner()
@@ -1074,6 +1079,10 @@ function onProgress(value) {
 	document.getElementById('tab-loader').hidden = complete
 }
 
+/**
+ * 跨 iframe 调用 runner.html 的 window.initEngine()。
+ * 最近调用方：initializeRuntime()；最顶层入口：浏览器 window.load。
+ */
 async function initEngine() {
 	await runnerWindow.initEngine(null, { logLevel: LOG_LEVEL_VERBOSE })
 	bindRunnerLifecycleEvents()
@@ -1105,6 +1114,7 @@ function bindRunnerLifecycleEvents() {
 	})
 }
 
+// 最近调用方：Start 按钮监听器；最顶层入口：用户点击 Start。
 async function startGame(startOptions = {}) {
 	await startProject(LAB_CONFIG.projects.primary, startOptions)
 }
@@ -1271,6 +1281,10 @@ function handleGameTermination(crashed, code) {
 	}
 }
 
+/**
+ * 通过 fetch 下载 game.zip，并在浏览器内存中解压为项目文件表。
+ * 最近调用方：startProject()；最顶层入口：用户点击 Start。
+ */
 async function loadProjectArchive(zipUrl) {
 	const response = await fetch(zipUrl)
 	if (!response.ok) {
@@ -1280,6 +1294,10 @@ async function loadProjectArchive(zipUrl) {
 	return fflate.unzipSync(new Uint8Array(zipped))
 }
 
+/**
+ * 启动一个项目的页面级总流程：下载 game.zip -> 准备会话 -> 加载项目 -> 启动游戏。
+ * 最近调用方：startGame()；最顶层入口：用户点击 Start。
+ */
 async function startProject(zipUrl, startOptions = {}) {
 	if (runtimeState.phase !== 'stopped') {
 		console.error('game is running')
@@ -1330,6 +1348,10 @@ async function startProject(zipUrl, startOptions = {}) {
 	}
 }
 
+/**
+ * 把解压结果转换为 GameApp 所需格式，依次调用 runner.initGame() 和 runner.startGame()。
+ * 最近调用方：startProject()；最顶层入口：用户点击 Start。
+ */
 async function startProjectSession(unzipped, startOptions, captureSession) {
 	runnerWindow.spxIsForceDebugLog = true
 	await prepareBaselineCaptureTarget(captureState.rootHandle, captureSession)

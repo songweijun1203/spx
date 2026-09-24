@@ -47,7 +47,7 @@ class ShaderMaterial;
 class Texture2D;
 class VisibleOnScreenNotifier2D;
 
-// Interface for sortable sprites
+// 可参与 SPX 图层排序的 Godot 节点接口，由 SpxLayerSorter 在模块内部调用。
 class ISortableSprite {
 public:
 	virtual ~ISortableSprite() = default;
@@ -59,7 +59,7 @@ public:
 	virtual bool is_sort_static() const { return false; }
 };
 
-// SpxRenderSprite - Wrapper for Sprite2D with sortable interface
+// 轻量纯渲染精灵：给普通 Sprite2D 增加 SPX 排序信息，不承载行为和物理状态。
 class SpxRenderSprite : public Sprite2D, public ISortableSprite {
 	GDCLASS(SpxRenderSprite, Sprite2D);
 
@@ -72,7 +72,7 @@ public:
 	void set_pivot(GdVec2 p_pivot) { pivot_offset = p_pivot; }
 	GdVec2 get_pivot() { return pivot_offset; }
 
-	// ISortableSprite interface implementation
+	// ISortableSprite 接口实现：排序位置会扣除素材轴心偏移。
 	GdObj get_sort_id() const override { return sort_id; }
 	Point2 get_sort_position() const override { return get_global_position() - pivot_offset; }
 	void set_sort_z_index(int p_z_index) override { set_z_index(p_z_index); }
@@ -81,11 +81,11 @@ public:
 	bool is_sort_static() const override { return true; }
 
 private:
-	GdObj sort_id = 0;
-	Vector2 pivot_offset;
+	GdObj sort_id = 0; // Go 对象 ID，也是稳定排序的身份标识。
+	Vector2 pivot_offset; // 素材轴心相对节点原点的偏移。
 };
 
-// SpxStaticSprite - Wrapper for StaticBody2D with sortable interface
+// 轻量静态精灵：给 StaticBody2D 增加排序和碰撞组件访问能力。
 class SpxStaticSprite : public StaticBody2D, public ISortableSprite {
 	GDCLASS(SpxStaticSprite, StaticBody2D);
 
@@ -97,7 +97,7 @@ public:
 	void set_pivot(GdVec2 p_pivot) { pivot_offset = p_pivot; }
 	GdVec2 get_pivot() { return pivot_offset; }
 
-	// ISortableSprite interface implementation
+	// ISortableSprite 接口实现。
 	GdObj get_sort_id() const override { return sort_id; }
 	Point2 get_sort_position() const override { return get_global_position() - pivot_offset; }
 	void set_sort_z_index(int p_z_index) override { set_z_index(p_z_index); }
@@ -106,11 +106,15 @@ public:
 	bool is_sort_static() const override { return true; }
 
 private:
-	GdObj sort_id = 0;
-	Vector2 pivot_offset;
-	CollisionShape2D *collider2d = nullptr;
+	GdObj sort_id = 0; // Go 对象 ID。
+	Vector2 pivot_offset; // 排序时使用的轴心偏移。
+	CollisionShape2D *collider2d = nullptr; // 借用的实体碰撞形状子节点。
 };
 
+// Go 逻辑精灵在 Godot 侧的运行时代理节点。
+// 节点本体是 CharacterBody2D，并持有 RenderRoot/Anim2D、Area2D/Trigger2D
+// 和 Collider2D 等子组件。SpxSpriteMgr 创建和登记它；Godot 驱动物理帧与通知；
+// Go 的属性、动画、渲染和物理命令先进入 Manager，再转发到本类。
 class SpxSprite : public CharacterBody2D, public ISortableSprite {
 	GDCLASS(SpxSprite, CharacterBody2D);
 
@@ -126,13 +130,13 @@ public:
 	SpxSprite();
 	~SpxSprite() override;
 
-	// Lifecycle
+	// 生命周期：由 SpxSpriteMgr 在节点入树后初始化，在节点销毁前通知 Go。
 	void on_start();
 	void on_destroy_call();
 
 	void set_block_signals(bool p_block);
 
-	// Metadata
+	// 元数据：维护 Go 对象 ID、精灵类型名以及是否为背景。
 	void set_gid(GdObj p_id);
 	GdObj get_gid();
 	void set_type_name(GdString p_type_name);
@@ -141,12 +145,12 @@ public:
 	void set_backdrop(GdBool p_is_backdrop) { is_backdrop = p_is_backdrop; }
 	bool is_backdrop_sprite() const { return is_backdrop; }
 
-	// Components
+	// 组件访问器：返回运行时解析出的 Godot 子节点，调用方不取得所有权。
 	AnimatedSprite2D *get_anim2d() const { return anim2d; }
 	Area2D *get_area2d() const { return area2d; }
 	CollisionShape2D *get_trigger() const { return trigger2d; }
 
-	// Rendering
+	// 渲染接口：由 SpxSpriteMgr 响应 Go API 后调用，操作材质、纹理和视觉变换。
 	void set_render_offset(GdVec2 p_render_offset);
 	GdVec2 get_render_offset() const { return render_offset; }
 	void set_render_scale(GdVec2 p_scale);
@@ -171,7 +175,7 @@ public:
 	GdString get_current_anim_name();
 	void on_set_visible(GdBool p_visible);
 
-	// Animation
+	// 动画接口：封装 AnimatedSprite2D，并支持普通位图和动态栅格化 SVG。
 	void play_anim(GdString p_name, GdFloat p_speed = 1.0, GdBool p_is_loop = false, GdBool p_from_end = false);
 	void play_backwards_anim(GdString p_name);
 	void pause_anim();
@@ -195,7 +199,7 @@ public:
 	void set_dynamic_frame_offset_enabled(GdBool p_enabled);
 	GdBool is_dynamic_frame_offset_enabled() const;
 
-	// Physics
+	// 物理接口：配置运动模式、力、质量及实体/触发器碰撞形状。
 	void set_physics_mode(GdInt p_mode);
 	GdInt get_physics_mode() const;
 	void set_use_gravity(GdBool p_enabled);
@@ -229,14 +233,14 @@ public:
 	void set_trigger_enabled(GdBool p_enabled);
 	GdBool is_trigger_enabled();
 
-	// Collision
+	// 碰撞查询与调试显示，由 Manager 的 Go API 或模块内部检测流程调用。
 	CollisionShape2D *get_collider(bool p_is_trigger = false);
 	GdBool check_collision(SpxSprite *p_other, GdBool p_is_src_trigger = true, GdBool p_is_dst_trigger = true);
 	GdBool check_collision_with_point(GdVec2 p_point, GdBool p_is_trigger = true);
 	void set_debug_collision_visible(GdBool p_enabled);
 	GdBool is_debug_collision_visible() const;
 
-	// ISortableSprite
+	// ISortableSprite 接口：由 SpxLayerSorter 在每帧排序时调用。
 	GdObj get_sort_id() const override { return gid; }
 	Point2 get_sort_position() const override { return get_global_position(); }
 	void set_sort_z_index(int p_z_index) override { set_z_index(p_z_index); }
@@ -245,6 +249,7 @@ public:
 	bool is_sort_static() const override { return get_physics_mode() == PhysicsMode::STATIC; }
 
 protected:
+	// Godot 调用：节点通知和物理帧；再按 physics_mode 分派具体运动实现。
 	void _notification(int p_what);
 	void _physics_process(double p_delta);
 	void _handle_dynamic_physics(double p_delta);
@@ -253,24 +258,24 @@ protected:
 	void _handle_no_physics(double p_delta);
 
 private:
-	// Component helpers
+	// 组件查找辅助函数：在自身子树中解析场景预制或运行时创建的组件。
 	template <typename T>
 	T *_get_component(Node *p_node, GdBool p_recursive = false);
 	template <typename T>
 	T *_get_component(GdBool p_recursive = false);
 
-	// Property bindings
+	// Godot ClassDB 属性绑定使用的内部 getter/setter。
 	void _set_use_default_frames(bool p_enabled);
 	bool _get_use_default_frames();
 
-	// Runtime initialization
+	// 运行时初始化：解析组件、建立默认帧、可见性检测器、信号和调试覆盖层。
 	void _resolve_runtime_components();
 	void _initialize_default_frames();
 	void _ensure_visible_notifier();
 	void _connect_runtime_signals();
 	void _update_collision_debug_overlays();
 
-	// Signal callbacks
+	// Godot 信号回调：把触发器、动画和可见性事件转发到 Manager/Go 回调表。
 	void _on_area_entered(Node *p_node);
 	void _on_area_exited(Node *p_node);
 	void _on_sprite_frames_set_changed();
@@ -282,7 +287,7 @@ private:
 	void _on_sprite_screen_exited();
 	void _on_sprite_screen_entered();
 
-	// Runtime updates
+	// 模块内部状态同步：碰撞启停、物理模式和当前视觉资源。
 	bool _can_enable_collider() const;
 	void _update_collider_disabled_state();
 	void _update_trigger_disabled_state();
@@ -295,6 +300,7 @@ private:
 		SVG_ANIMATION,
 		TEXTURE,
 		SVG_TEXTURE };
+	// 当前视觉资源的来源描述；key/animation_name 用于在资源更新后重新解析。
 	struct VisualSource {
 		VisualKind kind = VisualKind::ANIMATION;
 		String key;
@@ -308,6 +314,7 @@ private:
 			return kind == VisualKind::TEXTURE || kind == VisualKind::SVG_TEXTURE;
 		}
 	};
+	// 提交前已准备完成的视觉快照，保证切换过程不会留下半更新状态。
 	struct PreparedVisual {
 		VisualSource source;
 		Ref<SpriteFrames> shared_frames;
@@ -327,10 +334,11 @@ private:
 	Vector2 _get_actual_render_scale();
 	int _get_actual_match_render_scale();
 
-	// State
-	GdObj gid = 0;
-	Vector2 render_offset;
+	// 身份与渲染状态。
+	GdObj gid = 0; // 对应的 Go 精灵 ID。
+	Vector2 render_offset; // RenderRoot 相对物理节点的位置偏移。
 
+	// 物理状态；external_forces 持续积分，pending_impulse 只在下一物理帧消费一次。
 	PhysicsMode physics_mode = NO_PHYSICS;
 	bool use_gravity = true;
 	float gravity_scale = 1.0f;
@@ -341,6 +349,7 @@ private:
 	Vector2 pending_impulse = Vector2();
 	float _gravity = 980.0f;
 
+	// 功能开关和角色类型。
 	bool _is_collision_enabled = true;
 	bool _is_trigger_enabled = true;
 	bool debug_collision_visible = true;
@@ -348,17 +357,21 @@ private:
 	bool enable_dynamic_frame_offset = true;
 	bool is_backdrop = false;
 
+	// 素材基础偏移与 Go 设置的渲染缩放。
 	Vector2 base_offset = Vector2(0, 0);
 	Vector2 _render_scale = Vector2(1.0f, 1.0f);
 
+	// 可重载视觉资源的逻辑来源及当前播放速度。
 	String spx_type_name;
 	VisualSource visual_source;
 	Ref<SpriteFrames> source_sprite_frames;
 	float playback_speed = 1.0f;
 
+	// 节点初始资源，切换资源失败或恢复默认外观时使用。
 	Ref<SpriteFrames> default_sprite_frames;
 	Ref<ShaderMaterial> default_material;
 
+	// 运行时创建或绑定的 Godot 子节点组件。
 	Area2D *area2d = nullptr;
 	CollisionShape2D *trigger2d = nullptr;
 	CollisionShape2D *collider2d = nullptr;

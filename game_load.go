@@ -30,6 +30,9 @@ import (
 
 type spriteLoader func(sprite Sprite, name string, gamer reflect.Value) error
 
+// loadSprite 读取一个精灵的配置，并初始化对应的 Go SpriteImpl。
+// 直接调用方：loadGameSprites()、loadStage() 的精灵加载回调。
+// 它不会执行精灵 awake/Main；脚本生命周期由 runSpriteCallbacks() 排队。
 func (p *Game) loadSprite(sprite Sprite, name string, gamer reflect.Value) error {
 	spxlog.Debug("LoadSprite: %s", name)
 	loaded, err := coreproject.LoadSpriteConfig(p.fs, name)
@@ -39,6 +42,8 @@ func (p *Game) loadSprite(sprite Sprite, name string, gamer reflect.Value) error
 	return p.loadSpriteConfig(sprite, name, gamer, &loaded.Config)
 }
 
+// loadSpriteConfig 把已经解析好的 SpriteConfig 写入 Go 精灵对象，
+// 并初始化 SpriteImpl、组件和 Godot 运行代理，最后登记到 p.sprs。
 func (p *Game) loadSpriteConfig(sprite Sprite, name string, gamer reflect.Value, cfg *coreproject.SpriteConfig) error {
 	vSpr := reflect.ValueOf(sprite).Elem()
 	vSpr.Set(reflect.Zero(vSpr.Type()))
@@ -49,6 +54,9 @@ func (p *Game) loadSpriteConfig(sprite Sprite, name string, gamer reflect.Value,
 	return bindSpriteOwner(vSpr, gamer)
 }
 
+// loadStage 根据 project 配置建立舞台级状态。
+// 它同步完成显示、窗口、平台、相机、音频和 Tilemap 的准备，
+// 再创建 Z 序中的精灵/特殊形状；脚本回调则交给 bootstrap 队列。
 func (p *Game) loadStage(
 	g reflect.Value,
 	proj *coreproject.ProjectConfig,
@@ -176,6 +184,8 @@ func (p *Game) applyStageGeometry() {
 // -----------------------------------------------------------------------------
 // Sprite Setup
 // -----------------------------------------------------------------------------
+// loadAndInitSprites 按项目 Z 序加载舞台精灵和特殊形状，设置渲染层。
+// 返回值是后续需要执行 awake/Main 的精灵列表。
 func (p *Game) loadAndInitSprites(
 	g reflect.Value,
 	proj *coreproject.ProjectConfig,
@@ -209,6 +219,9 @@ func (p *Game) loadAndInitSprites(
 	return inits
 }
 
+// runSpriteCallbacks 把舞台初始化期间不能立即执行的生命周期工作登记到
+// bootstrap 队列，顺序为碰撞数据、精灵 awake、精灵 Main、游戏 OnLoaded。
+// 这样项目脚本会在舞台对象和基础系统准备好之后再运行。
 func (p *Game) runSpriteCallbacks(inits []Sprite, proj *coreproject.ProjectConfig, g reflect.Value, generation uint64) {
 	var onLoaded func()
 	if loader, ok := g.Addr().Interface().(interface{ OnLoaded() }); ok {

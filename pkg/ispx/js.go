@@ -36,6 +36,9 @@ var (
 	jsTypeUint8Array  = js.Global().Get("Uint8Array")
 )
 
+// 在 ispx.wasm 的 Go 包初始化阶段，把项目编译、启动、停止等宿主 API 注册到当前 globalThis。
+// 最近调用方：Go runtime 在执行 cmd/ispx.main() 前自动运行包 init，无普通 Go 调用者。
+// 最顶层入口：普通模式的 GameApp.runLogicWasm()，或 Worker 的 GoWasmBridge.initialize()。
 func init() {
 	js.Global().Set("ispx_build", jsFuncOfWithError(ispxBuild))
 	js.Global().Set("ispx_start", jsFuncOfWithError(ispxStart))
@@ -51,7 +54,9 @@ func defaultIXGoContextLookup(root, path string) (dir string, found bool) {
 	return
 }
 
-// ispxBuild is the JavaScript interface for [Build].
+// ispxBuild 是 [Build] 的 JavaScript 入口，负责把 JS 项目文件对象转换成 Go map 后编译。
+// 最近调用方：普通模式 GameApp.buildGame()，或 Worker tryRunGoWasm()。
+// 最顶层入口：外层页面下载 game.zip 后调用 GameApp.InitGame()/StartGame()。
 func ispxBuild(this js.Value, args []js.Value) any {
 	if len(args) == 0 {
 		return errors.New("missing files argument")
@@ -73,8 +78,11 @@ func ispxBuild(this js.Value, args []js.Value) any {
 	return nil
 }
 
-// ispxStart starts the interpreter asynchronously. It calls [Run] in a
-// goroutine and reports any errors to JavaScript via [reportRuntimeError].
+// ispxStart 从 JavaScript 启动 XGo 解释器游戏。
+// 最近调用方：Worker 的 tryRunGoWasm() 或普通模式 GameApp.onRunAfterStart()。
+// 最顶层入口：用户点击 Start，或宿主调用 runner.html 的 window.startGame()。
+// 它在 goroutine 中调用 Run()；Run() 执行游戏 main.go，随后进入
+// internal/engine.Main()，由 gdengine.PrepareLink() 建立 Web FFI、Manager 和回调。
 func ispxStart(this js.Value, args []js.Value) any {
 	preparation, err := prepareHostInputSession(args)
 	if err != nil {
@@ -205,8 +213,9 @@ func copyBytesToJS(data []byte) js.Value {
 	return result
 }
 
-// ispxStop stops the interpreter asynchronously. It calls [Shutdown] in a
-// goroutine to avoid blocking the JavaScript main thread.
+// ispxStop 异步停止解释器；使用 goroutine 是为了不阻塞 JavaScript 主线程。
+// 最近调用方：GameApp.stopGame()；最顶层入口：用户点击 Stop 或 runtime 恢复流程。
+// Shutdown() 最终请求 C++ SpxEngine reset，并等待解释器游戏退出。
 func ispxStop(this js.Value, args []js.Value) any {
 	go func() {
 		defer func() {

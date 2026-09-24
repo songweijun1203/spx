@@ -55,6 +55,7 @@ func (p *Game) updateSpriteProxies() {
 	p.camera.onUpdate()
 	activeShapes := p.shapeMgr.getTempShapes()
 	p.shapeMgr.flushActivate(activeShapes)
+	//p.shapeMgr.flushBubbleVisuals(activeShapes) //新加
 	p.flushSpriteProxyChanges(activeShapes)
 }
 
@@ -66,7 +67,7 @@ func (p *Game) syncPostCoroutineVisuals() {
 
 	p.flushSpriteProxyChanges(activeShapes)
 
-	p.shapeMgr.flushBubbleVisuals(activeShapes)
+	p.shapeMgr.flushBubbleVisuals(activeShapes) //去掉
 }
 
 func (p *Game) flushSpriteProxyChanges(activeShapes []Shape) {

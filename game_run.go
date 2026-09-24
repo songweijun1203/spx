@@ -52,7 +52,10 @@ func SetDebug(flags dbgFlags) {
 	gco.SetPerfDebug(flags&DbgFlagPerf != 0)
 }
 
-// XGot_Game_Main is required by XGo compiler as the entry of a .gmx project.
+// XGot_Game_Main 是 XGo 编译器生成的项目 main.go 调用的 SPX 游戏入口。
+// 最近调用方：编译或解释后的游戏 main.main。
+// Web 最顶层入口：GameApp.StartGame() -> ispx_start() -> ispx.Run()。
+// 它先把 Go 侧 Game/精灵类型信息交给 initGame()，再由 engine.Main() 建立引擎绑定。
 func XGot_Game_Main(game Gamer, sprites ...Sprite) {
 	g := game.baseGame()
 	err := engine.Main(game, g, func() {

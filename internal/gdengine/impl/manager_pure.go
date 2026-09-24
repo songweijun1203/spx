@@ -16,8 +16,7 @@
  * limitations under the License.
  */
 
-// Handwritten pure-engine managers embed the generated method stubs from
-// enginewrap/sync_pure.gen.go without FFI.
+// pure_engine Manager 不连接 Godot，直接嵌入 enginewrap/sync_pure.gen.go 的方法桩。
 package impl
 
 import (
@@ -105,6 +104,8 @@ type uiMgr struct {
 
 func (*platformMgr) IsMainThread() bool { return true }
 
+// BindMgr 把 pure_engine Manager 赋给 engine 包的全局接口变量。
+// 直接上级：gdengine.PrepareLink()。
 func BindMgr(mgrs []IManager) {
 	for _, mgr := range mgrs {
 		switch v := mgr.(type) {
@@ -144,6 +145,8 @@ func BindMgr(mgrs []IManager) {
 	}
 }
 
+// createMgrs 创建 pure_engine 使用的全部 Manager。
+// 直接上级：manager_base.go 的 CreateMgrs()。
 func createMgrs() []IManager {
 	addManager(&audioMgr{})
 	addManager(&cameraMgr{})

@@ -40,6 +40,11 @@ var (
 	actionEpoch int
 )
 
+// SyncWebInputSnapshot 在 Web 每个逻辑帧开始时从 Godot WASM 批量同步输入状态。
+//
+// 平台：仅 Web。
+// 直接上级：callbacks.gen.go 的 gdspxDispatch()，处理 OnEngineUpdate/FixedUpdate 时调用。
+// 跨模块来源：Godot -> library_godot_gdspx.js -> gdspx_dispatch -> 本函数。
 func SyncWebInputSnapshot() {
 	inputSnap.frame++
 	clearActionCache(inputSnap.frame)

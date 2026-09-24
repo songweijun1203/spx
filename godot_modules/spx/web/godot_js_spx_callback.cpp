@@ -35,9 +35,13 @@ static void _spx_web_game_data_callback(const char *p_path, const char **p_file_
 	_spx_web_apply_game_data(path, file_paths);
 }
 
+// 建立 Web 版 Godot C++ -> JavaScript 回调表，并创建 SpxEngine 单例。
+// 最近调用方：initialize_spx_module(MODULE_INITIALIZATION_LEVEL_CORE)。
+// 最顶层入口：engine.js -> Module.callMain() -> Godot 模块 CORE 初始化。
+// 这里不会加载 ispx.wasm；回调真正触发后由 library_godot_gdspx.js 再转发给 Go。
 void spx_web_register_callbacks() {
 	SpxCallbackInfo callback_infos = {};
-	// gdspx register callbacks
+	// 引擎生命周期、精灵、输入、碰撞和 UI 事件统一绑定到 Emscripten JS Library 导入函数。
 	callback_infos.func_on_engine_start = &godot_js_spx_on_engine_start;
 	callback_infos.func_on_engine_update = &godot_js_spx_on_engine_update;
 	callback_infos.func_on_engine_fixed_update = &godot_js_spx_on_engine_fixed_update;
@@ -82,6 +86,7 @@ void spx_web_register_callbacks() {
 	callback_infos.func_on_ui_toggle = &godot_js_spx_on_ui_toggle;
 	callback_infos.func_on_ui_text_changed = &godot_js_spx_on_ui_text_changed;
 
+	// register_callbacks() 创建全局唯一的 SpxEngine，并同步创建各 C++ Spx*Mgr。
 	SpxEngine::register_callbacks(&callback_infos);
 	SpxEngine::register_runtime_panic_callbacks(godot_js_spx_on_runtime_panic);
 	SpxEngine::register_runtime_exit_callbacks(godot_js_spx_on_runtime_exit);

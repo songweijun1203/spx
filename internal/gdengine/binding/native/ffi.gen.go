@@ -372,6 +372,9 @@ type GDExtensionInterface struct {
 	SpxUiSetFlip                                GDExtensionSpxUiSetFlip
 }
 
+// resolveAPIFunctions 解析 Native 平台所有 spx_* Manager 函数地址。
+// 调用时机：Godot 加载 GDExtension、执行 gdspx_init() 时。
+// 直接上级：binding/native.gdspx_init()；函数地址由 Godot 提供的 lookupFunc 查询。
 func (x *GDExtensionInterface) resolveAPIFunctions() {
 	x.SpxAudioStopAll = (GDExtensionSpxAudioStopAll)(resolveCFunc("spx_audio_stop_all"))
 	x.SpxAudioCreateAudio = (GDExtensionSpxAudioCreateAudio)(resolveCFunc("spx_audio_create_audio"))

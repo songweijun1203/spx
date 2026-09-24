@@ -557,13 +557,12 @@ func ToGdArray(slice interface{}) GdArray {
 	return GdArray(info.gdArray)
 }
 
-// Conversion functions
+// 以下为 Native 平台的 Godot/Go 数组转换函数。
 func ToArray(arrayInfo GdArray) any {
 	if arrayInfo == nil {
 		return nil
 	}
-	// Returned GdArray values own a temporary bridge buffer and must be freed
-	// after converting them into Go slices.
+	// 返回的 GdArray 持有临时桥接缓冲区，转换成 Go 切片后必须释放。
 	info := ArrayInfoImpl{gdArray: C.GdArray(arrayInfo), needsFree: true}
 	defer info.Free()
 	switch info.Type() {
@@ -584,11 +583,19 @@ func ToArray(arrayInfo GdArray) any {
 	}
 }
 
+// doInitialization 填写 Godot 要求的 GDExtension 初始化结构。
+//
+// 平台：仅 Native。
+// 调用时机：gdspx_init() 解析完 builtinAPI 后、返回 Godot 之前。
+// 直接上级：gdspx_init()。
+// 跨模块结果：Godot 随后会按这里登记的函数调用 initialize()/deinitialize()。
 func doInitialization(init *initialization) {
 	stringInitConstructorBindings()
 	C.initialization(init)
 }
 
+// getProcAddress 使用 Godot 传入的 lookupFunc 按名称查询 Native 函数地址。
+// 直接上级：resolveCFunc；再由 builtinAPI/api 的 resolveAPIFunctions() 间接调用。
 func getProcAddress(handle uintptr, name string) unsafe.Pointer {
 	name = name + "\000"
 	char := C.CString(name)
@@ -596,6 +603,12 @@ func getProcAddress(handle uintptr, name string) unsafe.Pointer {
 	return C.get_proc_address(C.pointer(handle), char)
 }
 
+// registerEngineCallback 把所有 Native func_on_xxx 回调地址注册给 godot_modules。
+//
+// 平台：仅 Native。
+// 调用时机：gdspx_init() 返回成功之前，此时 Go 游戏 main() 尚未启动。
+// 直接上级：gdspx_init()。
+// 跨模块目标：godot_modules 的 spx_global_register_callbacks()。
 func registerEngineCallback() {
 	spx_global_register_callbacks := resolveCFunc("spx_global_register_callbacks")
 	C.spx_global_register_callbacks(
@@ -603,6 +616,13 @@ func registerEngineCallback() {
 	)
 }
 
+// initialize 是 Godot 保存并调用的 Native 初始化回调。
+//
+// 平台：仅 Native。
+// 调用时机：Godot 初始化到 Scene 级别（level == 2）时。
+// 直接上级：Godot GDExtension 生命周期；函数地址由 doInitialization() 写入 configuration。
+// 跨模块结果：调用最终程序的 main.main，之后才会进入 engine.Main() 和 PrepareLink()。
+//
 //export initialize
 func initialize(_ unsafe.Pointer, level initializationLevel) {
 	if level == 2 {
@@ -610,12 +630,21 @@ func initialize(_ unsafe.Pointer, level initializationLevel) {
 	}
 }
 
+// deinitialize 是 Godot 保存并调用的 Native 反初始化回调。
+// 平台：仅 Native；直接上级为 Godot GDExtension 生命周期。
+//
 //export deinitialize
 func deinitialize(_ unsafe.Pointer, level initializationLevel) {
 	if level == 0 {
 	}
 }
 
+// 以下 func_on_xxx 均为 Native 专用的 Godot -> Go C ABI 回调入口。
+// 调用链：godot_modules -> C 函数指针 -> func_on_xxx -> callbacks.OnXxx
+// -> internal/gdengine/callbacks.go。Web 不使用这些函数，而由 gdspxDispatch() 分发事件。
+
+// func_on_engine_start 接收 Godot 的引擎启动事件。
+//
 //export func_on_engine_start
 func func_on_engine_start() {
 	if callbacks.OnEngineStart != nil {
@@ -623,6 +652,8 @@ func func_on_engine_start() {
 	}
 }
 
+// func_on_engine_update 接收 Godot 每帧逻辑更新事件。
+//
 //export func_on_engine_update
 func func_on_engine_update(delta C.GDReal) {
 	if callbacks.OnEngineUpdate != nil {
@@ -630,6 +661,8 @@ func func_on_engine_update(delta C.GDReal) {
 	}
 }
 
+// func_on_engine_fixed_update 接收 Godot 物理帧更新事件。
+//
 //export func_on_engine_fixed_update
 func func_on_engine_fixed_update(delta C.GDReal) {
 	if callbacks.OnEngineFixedUpdate != nil {
@@ -637,6 +670,8 @@ func func_on_engine_fixed_update(delta C.GDReal) {
 	}
 }
 
+// func_on_engine_destroy 在 Godot 开始销毁本次游戏会话时触发。
+//
 //export func_on_engine_destroy
 func func_on_engine_destroy() {
 	if callbacks.OnEngineDestroy != nil {
@@ -644,6 +679,8 @@ func func_on_engine_destroy() {
 	}
 }
 
+// func_on_engine_destroyed 在 Godot 完成游戏会话销毁后触发。
+//
 //export func_on_engine_destroyed
 func func_on_engine_destroyed() {
 	if callbacks.OnEngineDestroyed != nil {
@@ -651,6 +688,8 @@ func func_on_engine_destroyed() {
 	}
 }
 
+// func_on_engine_reset 接收 Godot 的游戏重置事件。
+//
 //export func_on_engine_reset
 func func_on_engine_reset() {
 	if callbacks.OnEngineReset != nil {
@@ -658,6 +697,8 @@ func func_on_engine_reset() {
 	}
 }
 
+// func_on_engine_pause 接收 Godot 的暂停状态变化。
+//
 //export func_on_engine_pause
 func func_on_engine_pause(is_pause bool) {
 	if callbacks.OnEnginePause != nil {

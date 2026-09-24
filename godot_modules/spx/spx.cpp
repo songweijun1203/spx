@@ -80,6 +80,7 @@ inline bool _is_spx_engine_ready() {
 }
 } // namespace
 
+// 最近调用方：initialize_spx_module(CORE)；最顶层入口：Godot C++ main 的模块初始化。
 void Spx::register_extension_functions() {
 	if (extension_functions_registered) {
 		return;
@@ -98,6 +99,9 @@ void Spx::unregister_extension_functions() {
 	// cannot try to insert the same SPX function names a second time.
 }
 
+// 把 SPX 的 start/fixed_update/update/destroy 接到 Godot 主循环阶段总线。
+// 最近调用方：initialize_spx_module(SCENE)。
+// 最顶层入口：engine.js -> Module.callMain() -> Godot SCENE 模块初始化。
 void Spx::register_main_loop_callbacks() {
 	if (main_loop_callback_registration != MainLoopPhaseCallbackBus::INVALID_REGISTRATION_ID) {
 		return;
@@ -136,6 +140,10 @@ void Spx::register_types() {
 	ClassDB::register_class<SpxCallbackProxy>();
 }
 
+// SPX 底层生命周期的真正启动点。
+// 最近调用方：_spx_main_loop_start()，它由 Godot 主循环阶段总线调用。
+// 最顶层入口：Godot SceneTree 开始运行；Web 侧起点是 Engine.start() 的 Module.callMain()。
+// 本函数创建 SpxEngineNode 并唤醒 C++ Managers，最后才发出 on_engine_start 回调。
 void Spx::on_start(MainLoop *p_main_loop) {
 	if (initialized.is_set() || !SpxEngine::is_initialized()) {
 		return;
@@ -160,6 +168,7 @@ void Spx::on_start(MainLoop *p_main_loop) {
 	SPX_ENGINE->on_awake();
 }
 
+// 最近调用方：_spx_main_loop_fixed_update()；最顶层来源：Godot 每个物理帧。
 void Spx::on_fixed_update(double delta) {
 	if (!_is_spx_engine_ready()) {
 		return;
@@ -168,6 +177,8 @@ void Spx::on_fixed_update(double delta) {
 	SPX_ENGINE->on_fixed_update(delta);
 }
 
+// 最近调用方：_spx_main_loop_update()；最顶层来源：Godot 每个渲染/逻辑帧。
+// 待处理的 restart/reset/pause 等控制命令会在正常 Update 之前消费。
 void Spx::on_update(double delta) {
 	if (!_is_spx_engine_ready()) {
 		return;
@@ -197,9 +208,10 @@ void Spx::on_update(double delta) {
 	SPX_ENGINE->on_update(delta);
 }
 
+// 最近调用方：主循环 destroy 回调或模块反初始化兜底；最顶层来源：Godot main 退出。
 void Spx::on_destroy() {
-	// Runtime callbacks invoked during shutdown must observe SPX as unavailable;
-	// otherwise they can re-enter ordinary APIs while managers are tearing down.
+	// 销毁期间触发的 runtime 回调必须观察到 SPX 已不可用，否则回调可能在 Manager
+	// 正在释放时重新进入普通 API。
 	initialized.clear();
 	pending_controls.set_accepting(false);
 

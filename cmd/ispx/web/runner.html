@@ -40,11 +40,19 @@
 			<canvas id="game-canvas" tabindex="2"></canvas>
 		</div>
 	</div>
+	<!--
+		脚本按书写顺序执行：先准备 Go WASM 和 Godot Engine，再定义 GameApp，最后暴露页面 API。
+		最近调用方：浏览器 HTML 解析器；最顶层入口：浏览器导航到 runner.html（当前由 index.html 的 iframe 加载）。
+	-->
 	<script>var miniEngine = null</script>
 	<script>var isWasmCompressed = false</script>
+	<!-- 定义 new Go()，供 game.js 在普通模式中实例化 ispx.wasm。 -->
 	<script src="go.wasm.exec.js"></script>
+	<!-- 主线程与 PThread Worker 的消息管理；普通模式也加载，但核心转发逻辑不会启用。 -->
 	<script src="worker.message.manager.js"></script>
+	<!-- 定义 Godot 的 Engine、Emscripten Module 工厂和 GdspxFuncs 桥接方法。 -->
 	<script src="engine.js"></script>
+	<!-- 定义 GameApp，统一编排 Godot WASM、Go WASM、engine.zip 和项目资源。 -->
 	<script src="game.js"></script>
 	<script src="input-session.js"></script>
 	<script src="capture.js"></script>
@@ -86,6 +94,7 @@
 			}
 		}
 
+		// 最近调用方：GameApp.onGodotExit()；最顶层来源：Godot main 的 onExit 回调。
 		async function handleGodotExit(code) {
             await restartEngineAfterCrash("godot exit", code);
         }
@@ -95,6 +104,7 @@
 		let onGameExit = null
 		let onEngineCrash = null;
 		const MAX_RESTART_ATTEMPTS = 3;
+		// 最近调用方：Godot/Go WASM 的退出与崩溃监听器；最顶层来源：底层 runtime 异常或退出。
 		async function restartEngineAfterCrash(reason, code) {
 			if (gameApp != null) {
 				gameApp.onRuntimeReset(code)
@@ -129,20 +139,24 @@
 			onEngineCrash = callback
 		}
 
+		// 最近调用方：Godot JS 桥 notifyRuntime()；最顶层来源：Go 游戏运行时 panic。
 		window.gdspx_on_runtime_panic = function (msg) {
 			if (onGameError != null) {
 				onGameError(msg)
 			}
 		}
 
+		// 最近调用方：Godot JS 桥 notifyRuntime()；最顶层来源：C++ SpxExtMgr::request_exit()。
 		window.gdspx_on_runtime_exit = async (code) => {
 			await restartEngineAfterCrash("runtime exit", code);
 		}
 
+		// 最近调用方：GameApp.notifyExit()；最顶层来源：Go WASM 程序自身退出。
 		window.onGoWasmExit = async (code) => {
 			await restartEngineAfterCrash("go wasm exit", code);
 		}
 
+		// 最近调用方：Godot JS 桥 notifyRuntime()；最顶层来源：Web 游戏停止后的 C++ runtime reset。
 		window.gdspx_on_runtime_reset = async (code) => {
 			if (gameApp != null) {
 				gameApp.onRuntimeReset(code)
@@ -152,10 +166,16 @@
 			}
 		}
 
+		// 事件注册时机：runner.html 执行内联脚本时；事件来源：Engine.init() 安装的 Module.onAbort。
 		window.addEventListener("godot-wasm-crash", async e => {
 			await restartEngineAfterCrash("godot crash", e.detail);
 		})
 
+		/**
+		 * 页面级引擎初始化入口，只启动可复用的 Godot/SPX 底层环境。
+		 * 最近调用方：外层 index.js 的 initEngine()，也允许其他宿主直接调用。
+		 * 最顶层入口：浏览器 window.load 后的 initializeRuntime()。
+		 */
 		window.initEngine = async (assetURLs = null, config = {}) => {
 			isShowEditor = false
 			
@@ -207,6 +227,11 @@
 			await gameApp.InitEngine();
 		}
 
+		/**
+		 * 页面级项目加载入口。
+		 * 最近调用方：外层 index.js 的 startProjectSession()。
+		 * 最顶层入口：用户点击 Start 后的 startProject()。
+		 */
 		window.initGame = async (files) => {
 			if (gameApp == null) throw new Error("gameApp is null, should call initEngine first")
 			await gameApp.InitGame(files)
@@ -236,6 +261,11 @@
 			return captureBridge.handleRequest(request)
 		}
 
+		/**
+		 * 页面级游戏启动入口；此时 Godot 已在主循环中，接下来启动的是具体 SPX 游戏。
+		 * 最近调用方：外层 index.js 的 startProjectSession()。
+		 * 最顶层入口：用户点击 Start 后的 startProject()。
+		 */
 		window.startGame = async (options = {}) => {
 			if (gameApp == null) throw new Error("gameApp is null, should call initEngine first")
 			await gameApp.StartGame(spxInputSession.normalizeStartOptions(options));
@@ -253,6 +283,11 @@
 			return status
 		}
 
+		/**
+		 * 页面级停止入口；结束本局 SPX runtime，通常保留 Godot WASM 供下一局复用。
+		 * 最近调用方：外层 index.js 的 stopGame()。
+		 * 最顶层入口：用户点击 Stop 或自动终止流程。
+		 */
 		window.stopGame = async () => {
 			if (gameApp == null) {
 				throw new Error("gameApp is null, should call startGame first")
@@ -325,7 +360,8 @@
 			gameApp.stepNextFrame();
 		}
 		
-		// Inform the parent window that the runner is ready (methods on the window object are callable)
+		// 通知父页面：runner 的 window.initEngine/initGame/startGame 等函数已经可以调用。
+		// 最近接收方：外层宿主页面；最顶层来源：runner.html 完成全部脚本注册。
 		window.dispatchEvent(new Event('runnerReady'));
 	</script>
 </body>

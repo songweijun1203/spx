@@ -29,6 +29,18 @@
 /**************************************************************************/
 
 /*
+ * Godot Web 的浏览器输入适配层。
+ *
+ * 本文件由 Emscripten 合并进最终 engine.js。Godot C++ 初始化输入系统时调用下面的
+ * godot_js_input_* 注册函数，这些函数再通过 GodotEventListeners.add() 把浏览器的
+ * 鼠标、滚轮、触摸、键盘、手柄和输入法事件绑定到 Canvas/Window。
+ *
+ * 最近调用方：Godot Web 平台的 C++ 输入/显示初始化代码。
+ * 最顶层入口：GameApp.InitEngine() -> Engine.start() -> Module.callMain()。
+ * 运行时最顶层事件源：浏览器向 Canvas、Window 或 navigator 派发的 DOM 输入事件。
+ */
+
+/*
  * IME API helper.
  */
 
@@ -479,9 +491,7 @@ const GodotInputDragDrop = {
 };
 mergeInto(LibraryManager.library, GodotInputDragDrop);
 
-/*
- * Godot exposed input functions.
- */
+/* Godot 暴露给 C++ Web 平台层的输入注册函数。 */
 const GodotInput = {
 	$GodotInput__deps: ['$GodotRuntime', '$GodotConfig', '$GodotEventListeners', '$GodotInputGamepads', '$GodotInputDragDrop', '$GodotIME'],
 	$GodotInput: {
@@ -504,9 +514,7 @@ const GodotInput = {
 		},
 	},
 
-	/*
-	 * Mouse API
-	 */
+	/* 鼠标事件注册。最近调用方：Godot 输入初始化；运行时事件源：浏览器 mousemove/wheel/mousedown/mouseup。 */
 	godot_js_input_mouse_move_cb__proxy: 'sync',
 	godot_js_input_mouse_move_cb__sig: 'vi',
 	godot_js_input_mouse_move_cb: function (callback) {
@@ -515,7 +523,7 @@ const GodotInput = {
 		function move_cb(evt) {
 			const rect = canvas.getBoundingClientRect();
 			const pos = GodotInput.computePosition(evt, rect);
-			// Scale movement
+			// 按 Canvas 的实际像素与页面显示尺寸比例缩放相对位移。
 			const rw = canvas.width / rect.width;
 			const rh = canvas.height / rect.height;
 			const rel_pos_x = evt.movementX * rw;
@@ -547,8 +555,8 @@ const GodotInput = {
 			const rect = canvas.getBoundingClientRect();
 			const pos = GodotInput.computePosition(evt, rect);
 			const modifiers = GodotInput.getModifiers(evt);
-			// Since the event is consumed, focus manually.
-			// NOTE: The iframe container may not have focus yet, so focus even when already active.
+			// 事件会被消费，因此鼠标按下时主动让 Canvas 获得焦点。
+			// iframe 容器可能尚未获得焦点，即使页面看似激活也仍需显式 focus。
 			if (p_pressed) {
 				GodotConfig.canvas.focus();
 			}
@@ -560,17 +568,15 @@ const GodotInput = {
 		GodotEventListeners.add(window, 'mouseup', button_cb.bind(null, 0), false);
 	},
 
-	/*
-	 * Touch API
-	 */
+	/* 触摸事件注册。最近调用方：Godot 输入初始化；运行时事件源：Canvas 的 touchstart/end/cancel/move。 */
 	godot_js_input_touch_cb__proxy: 'sync',
 	godot_js_input_touch_cb__sig: 'viii',
 	godot_js_input_touch_cb: function (callback, ids, coords) {
 		const func = GodotRuntime.get_func(callback);
 		const canvas = GodotConfig.canvas;
 		function touch_cb(type, evt) {
-			// Since the event is consumed, focus manually.
-			// NOTE: The iframe container may not have focus yet, so focus even when already active.
+			// 事件会被消费，因此首次触摸时主动让 Canvas 获得焦点。
+			// iframe 容器可能尚未获得焦点，即使页面看似激活也仍需显式 focus。
 			if (type === 0) {
 				GodotConfig.canvas.focus();
 			}
@@ -594,9 +600,7 @@ const GodotInput = {
 		GodotEventListeners.add(canvas, 'touchmove', touch_cb.bind(null, 2), false);
 	},
 
-	/*
-	 * Key API
-	 */
+	/* 键盘事件注册。最近调用方：Godot 输入初始化；运行时事件源：Canvas 的 keydown/keyup。 */
 	godot_js_input_key_cb__proxy: 'sync',
 	godot_js_input_key_cb__sig: 'viii',
 	godot_js_input_key_cb: function (callback, code, key) {

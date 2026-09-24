@@ -208,23 +208,48 @@ func InitLoops(create func(coroutine.ThreadObj, func(coroutine.Thread)) coroutin
 	}
 }
 
+// runInputLoopFrame 处理输入协程的一轮输入采样。
+//
+// 直接调用方：RunInputLoop()；每轮循环调用一次，然后由 RunInputLoop
+// 在外层 WaitNextFrame()。它本身不接收 Godot 的原始 InputEvent，
+// 而是通过 cfg 中的回调读取已经同步到 Go 的键盘/鼠标状态，再将
+// 状态变化转换为 eventKeyDown、eventLeftButtonDown/Up 等高层事件。
+//
+// 普通实时模式下，鼠标按钮通过“上一帧状态 vs 当前状态”判断，
+// 不直接消费 mouseInput.ready；输入回放模式则由上层把 MouseEvent
+// 放入 ProcessInputFrame() 的 InputFrame 中处理。
 func runInputLoopFrame(cfg InputLoopConfig, state *inputLoopState) {
+	// 某些输入会话需要在本轮结束时提交或释放资源；例如回放帧的收尾。
 	if cfg.EndFrame != nil {
 		defer cfg.EndFrame()
 	}
+	// 读取当前鼠标位置。普通模式来自 Godot InputMgr，Web 模式可能来自
+	// 当前帧的输入快照；随后把位置写入 Game.inputMgr 的缓存。
 	point := cfg.CurrentMousePos()
-	// Keep the cached mouse position in sync with the engine every frame,
-	// so callers don't need a second engine-side mouse query elsewhere.
 	cfg.SetMousePos(point)
+
+	// 取出本帧开始时已经从 keyInput.pending 转入 keyInput.ready 的键盘边沿。
+	// 这里复用 state.keyEvents 的底层数组，避免每帧重新分配内存。
 	state.keyEvents = cfg.GetKeyEvents(state.keyEvents)
+
+	// 读取鼠标左键当前状态。普通模式只轮询左键；右键/中键的详细边沿
+	// 由 mouseInput.pending/ready 在输入录制或回放路径中处理。
 	currentLeftButtonPressed := cfg.IsLeftButtonPressed()
+
 	if state.wasSuspended {
-		// The suspended consumer owns all edges. Resume from the current held
-		// state without manufacturing events at the handoff boundary.
+		// 输入循环上一轮处于回放/输入会话暂停状态，暂停期间的输入由另一条
+		// 会话路径负责消费。因此恢复时只同步当前状态，不伪造一次按下、抬起
+		// 或鼠标移动事件，避免把会话切换误判为用户操作。
 		state.lastMousePos = point
 		state.lastLeftButtonPressed = currentLeftButtonPressed
 		state.wasSuspended = false
 	} else {
+		// 把本轮采样结果交给 ProcessInputFrame：
+		// - 比较左右帧左键状态，必要时调用 FireLeftButtonDown/Up；
+		// - 比较左右帧鼠标位置，超过阈值时调用 OnMouseMove；
+		// - 遍历 keyEvents，对按下事件调用 OnKeyPressed。
+		// 这些回调由 Game.inputEventLoop 配置：按键/点击通常写入
+		// Game.events，实时鼠标移动则直接更新 inputMgr。
 		state.lastMousePos, state.lastLeftButtonPressed = ProcessInputFrame(
 			InputFrame{
 				Point:                    point,
@@ -243,5 +268,6 @@ func runInputLoopFrame(cfg InputLoopConfig, state *inputLoopState) {
 			},
 		)
 	}
+	// 本轮事件已经被 ProcessInputFrame 消费；保留底层数组容量供下一轮复用。
 	state.keyEvents = state.keyEvents[:0]
 }

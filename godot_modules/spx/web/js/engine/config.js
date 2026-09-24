@@ -1,15 +1,26 @@
-/**
- * An object used to configure the Engine instance based on godot export options, and to override those in custom HTML
- * templates if needed.
+/*
+ * Godot Web 引擎配置。
  *
- * @header Engine configuration
- * @summary The Engine configuration object. This is just a typedef, create it like a regular object, e.g.:
+ * 宿主页面会用普通 JavaScript 对象传入选项，例如：
+ *     const config = { executable: 'engine', unloadAfterInit: false };
+ *     const engine = new Engine(config);
  *
- * ``const MyConfig = { executable: 'godot', unloadAfterInit: false }``
+ * InternalConfig 会先提供默认值，再用用户传入的同名属性覆盖默认值。随后它分别
+ * 生成两种配置：
+ * - getModuleConfig()：交给 Emscripten，用于实例化 WASM、定位附属文件；
+ * - getGodotConfig()：交给 Godot，用于 Canvas、语言、输入和退出回调。
+ *
+ * 初学者阅读提示：
+ * - { key: value } 是对象字面量，作用类似 Go 的结构体实例加动态字段。
+ * - null 表示“明确没有值”，undefined 通常表示“没有提供这个属性”。
+ * - true/false 是布尔值；[] 是数组；function (...) { ... } 是函数值。
+ * - prototype 上的方法会被该构造函数创建的所有实例共享。
+ * - @param、@type 等是 JSDoc 类型说明，只是注释，不会在运行时执行。
  *
  * @typedef {Object} EngineConfig
  */
 const EngineConfig = {}; // eslint-disable-line no-unused-vars
+// 日志级别数值越大，允许输出的内容越少。
 const LOG_LEVEL_VERBOSE = 0
 const LOG_LEVEL_LOG = 1
 const LOG_LEVEL_WARNING = 2
@@ -18,187 +29,104 @@ const LOG_LEVEL_NONE = 4
 
 let engineLogLevel = LOG_LEVEL_VERBOSE
 /**
- * @struct
- * @constructor
- * @ignore
+ * 把用户配置与默认值合并成内部配置对象。
+ * @param {EngineConfig} initConfig 用户传入的原始配置。
  */
 const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-vars
+	// cfg 是默认配置对象，后面会成为 Config.prototype。
 	const cfg = /** @lends {InternalConfig.prototype} */ {
 		/**
-		 * Whether to unload the engine automatically after the instance is initialized.
-		 *
-		 * @memberof EngineConfig
-		 * @default
+		 * WASM 实例化后是否丢弃之前缓存的下载 Promise，以便释放下载数据引用。
 		 * @type {boolean}
 		 */
 		unloadAfterInit: true,
 		/**
-		 * The HTML DOM Canvas object to use.
-		 *
-		 * By default, the first canvas element in the document will be used is none is specified.
-		 *
-		 * @memberof EngineConfig
-		 * @default
+		 * Godot 用于渲染画面的 HTML Canvas；未指定时会查找页面第一个 canvas。
 		 * @type {?HTMLCanvasElement}
 		 */
 		canvas: null,
 		/**
-		 * The name of the WASM file without the extension. (Set by Godot Editor export process).
-		 *
-		 * @memberof EngineConfig
-		 * @default
+		 * 引擎文件基础名，不含扩展名。例如 engine 对应 engine.wasm、engine.js。
 		 * @type {string}
 		 */
 		executable: '',
 		/**
-		 * An alternative name for the game pck to load. The executable name is used otherwise.
-		 *
-		 * @memberof EngineConfig
-		 * @default
+		 * 主资源包路径；为 null 时 startGame() 默认使用 `${executable}.pck`。
 		 * @type {?string}
 		 */
 		mainPack: null,
 		/**
-		 * Specify a language code to select the proper localization for the game.
-		 *
-		 * The browser locale will be used if none is specified. See complete list of
-		 * :ref:`supported locales <doc_locales>`.
-		 *
-		 * @memberof EngineConfig
+		 * Godot 本地化语言，例如 zh_CN；为 null 时读取浏览器语言。
 		 * @type {?string}
-		 * @default
 		 */
 		locale: null,
 		/**
-		 * The canvas resize policy determines how the canvas should be resized by Godot.
-		 *
-		 * ``0`` means Godot won't do any resizing. This is useful if you want to control the canvas size from
-		 * javascript code in your template.
-		 *
-		 * ``1`` means Godot will resize the canvas on start, and when changing window size via engine functions.
-		 *
-		 * ``2`` means Godot will adapt the canvas size to match the whole browser window.
-		 *
-		 * @memberof EngineConfig
+		 * Canvas 尺寸策略：0=宿主完全控制；1=启动和窗口变化时由 Godot 调整；
+		 * 2=始终适配整个浏览器窗口。
 		 * @type {number}
-		 * @default
 		 */
 		canvasResizePolicy: 2,
 		/**
-		 * The arguments to be passed as command line arguments on startup.
-		 *
-		 * See :ref:`command line tutorial <doc_command_line_tutorial>`.
-		 *
-		 * **Note**: :js:meth:`startGame <Engine.prototype.startGame>` will always add the ``--main-pack`` argument.
-		 *
-		 * @memberof EngineConfig
+		 * 传给 Godot main 的命令行参数；startGame() 会自动在前面加入 --main-pack。
 		 * @type {Array<string>}
-		 * @default
 		 */
 		args: [],
 		/**
-		 * When enabled, the game canvas will automatically grab the focus when the engine starts.
-		 *
-		 * @memberof EngineConfig
+		 * 启动时是否让 Canvas 自动获得焦点，以便立即接收键盘事件。
 		 * @type {boolean}
-		 * @default
 		 */
 		focusCanvas: true,
 		/**
-		 * When enabled, this will turn on experimental virtual keyboard support on mobile.
-		 *
-		 * @memberof EngineConfig
+		 * 是否启用移动端实验性虚拟键盘支持。
 		 * @type {boolean}
-		 * @default
 		 */
 		experimentalVK: false,
 		/**
-		 * The progressive web app service worker to install.
-		 * @memberof EngineConfig
-		 * @default
+		 * 需要注册的 PWA Service Worker 脚本路径；空字符串表示不注册。
 		 * @type {string}
 		 */
 		serviceWorker: '',
 		/**
-		 * @ignore
+		 * 需要持久化同步的 Godot 虚拟目录。
 		 * @type {Array.<string>}
 		 */
 		persistentPaths: ['/userfs'],
 		/**
-		 * @ignore
+		 * 拖入文件是否写入持久化存储。
 		 * @type {boolean}
 		 */
 		persistentDrops: false,
 		/**
-		 * @ignore
+		 * 需要额外加载的 GDExtension 动态库路径。
 		 * @type {Array.<string>}
 		 */
 		gdextensionLibs: [],
 		/**
-		 * @ignore
+		 * 已知资源大小表，供下载进度在请求开始前得到准确 total。
 		 * @type {Array.<string>}
 		 */
 		fileSizes: [],
+		// 已下载的 engine.wasm 二进制数据；本项目可由宿主预先下载后直接传入。
 		wasmEngine: null,
 		/**
-		 * A callback function for handling Godot's ``OS.execute`` calls.
-		 *
-		 * This is for example used in the Web Editor template to switch between project manager and editor, and for running the game.
-		 *
-		 * @callback EngineConfig.onExecute
-		 * @param {string} path The path that Godot's wants executed.
-		 * @param {Array.<string>} args The arguments of the "command" to execute.
-		 */
-		/**
-		 * @ignore
+		 * Godot 调用 OS.execute 时交给宿主处理的回调。
 		 * @type {?function(string, Array.<string>)}
 		 */
 		onExecute: null,
 		/**
-		 * A callback function for being notified when the Godot instance quits.
-		 *
-		 * **Note**: This function will not be called if the engine crashes or become unresponsive.
-		 *
-		 * @callback EngineConfig.onExit
-		 * @param {number} status_code The status code returned by Godot on exit.
-		 */
-		/**
-		 * @ignore
+		 * Godot 正常退出时的回调，参数是退出码；崩溃或死循环时不保证触发。
 		 * @type {?function(number)}
 		 */
 		onExit: null,
 		/**
-		 * A callback function for displaying download progress.
-		 *
-		 * The function is called once per frame while downloading files, so the usage of ``requestAnimationFrame()``
-		 * is not necessary.
-		 *
-		 * If the callback function receives a total amount of bytes as 0, this means that it is impossible to calculate.
-		 * Possible reasons include:
-		 *
-		 * -  Files are delivered with server-side chunked compression
-		 * -  Files are delivered with server-side compression on Chromium
-		 * -  Not all file downloads have started yet (usually on servers without multi-threading)
-		 *
-		 * @callback EngineConfig.onProgress
-		 * @param {number} current The current amount of downloaded bytes so far.
-		 * @param {number} total The total amount of bytes to be downloaded.
-		 */
-		/**
-		 * @ignore
+		 * 下载进度回调 (current, total)。total=0 表示服务器没有提供可靠总大小。
+		 * 预加载器每个动画帧最多调用一次，宿主无需再套 requestAnimationFrame。
 		 * @type {?function(number, number)}
 		 */
 		onProgress: null,
 		/**
-		 * A callback function for handling the standard output stream. This method should usually only be used in debug pages.
-		 *
-		 * By default, ``console.log()`` is used.
-		 *
-		 * @callback EngineConfig.onPrint
-		 * @param {...*} [var_args] A variadic number of arguments to be printed.
-		 */
-		/**
-		 * @ignore
+		 * Godot 标准输出处理函数。arguments 是 JavaScript 自动提供的全部实参数组；
+		 * console.log.apply(console, ...) 相当于把这些参数逐个传给 console.log。
 		 * @type {?function(...*)}
 		 */
 		onPrint: function () {
@@ -208,15 +136,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 			console.log.apply(console, Array.from(arguments)); // eslint-disable-line no-console
 		},
 		/**
-		 * A callback function for handling the standard error stream. This method should usually only be used in debug pages.
-		 *
-		 * By default, ``console.error()`` is used.
-		 *
-		 * @callback EngineConfig.onPrintError
-		 * @param {...*} [var_args] A variadic number of arguments to be printed as errors.
-		*/
-		/**
-		 * @ignore
+		 * Godot 标准错误输出处理函数；超过允许日志级别时直接 return，不打印。
 		 * @type {?function(...*)}
 		 */
 		onPrintError: function (var_args) {
@@ -244,22 +164,23 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 	 * @param {EngineConfig} opts
 	 */
 	Config.prototype.update = function (opts) {
+		// 未传 opts 时用空对象；parse() 会保留当前值，而不是把它重置成 undefined。
 		const config = opts || {};
-		// NOTE: We must explicitly pass the default, accessing it via
-		// the key will fail due to closure compiler renames.
+		// parse 是本地小函数：配置对象没有 key 时返回传入的默认值，否则返回用户值。
+		// 显式传默认值还能避免 Closure Compiler 压缩内部属性名造成错误。
 		function parse(key, def) {
 			if (typeof (config[key]) === 'undefined') {
 				return def;
 			}
 			return config[key];
 		}
-		// Module config
+		// 下面一组属性影响 Emscripten Module。
 		this.unloadAfterInit = parse('unloadAfterInit', this.unloadAfterInit);
 		this.onPrintError = parse('onPrintError', this.onPrintError);
 		this.onPrint = parse('onPrint', this.onPrint);
 		this.onProgress = parse('onProgress', this.onProgress);
 
-		// Godot config
+		// 下面一组属性影响 Godot 本身。
 		this.canvas = parse('canvas', this.canvas);
 		this.executable = parse('executable', this.executable);
 		this.mainPack = parse('mainPack', this.mainPack);
@@ -276,31 +197,40 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 		this.onExecute = parse('onExecute', this.onExecute);
 		this.onExit = parse('onExit', this.onExit);
 
-		// Wasm data
+		// wasmEngine 是可选的预下载 ArrayBuffer。
 		this.wasmEngine = parse('wasmEngine', this.wasmEngine);
 		engineLogLevel = parse('logLevel', engineLogLevel);
 	};
 
 	/**
 	 * @ignore
+	 * 生成 Emscripten Module 的实例化配置，包括主 WASM、side.wasm 和文件定位规则。
+	 * 最近调用方：engine.js 的 Engine.init()。
+	 * 最顶层入口：GameApp.InitEngine() -> GameApp.initEngine() -> curGame.init()。
 	 * @param {string} loadPath
 	 * @param {(!ArrayBuffer|!ArrayBufferView)} buffer
 	 */
 	Config.prototype.getModuleConfig = function (loadPath, buffer) {
+		// let 允许后续改值；这里保存宿主传入的 WASM 二进制数据。
 		let curBuffer = buffer
+		// 返回对象字面量，属性名是 Emscripten 识别的固定配置键。
 		return {
 			'print': this.onPrint,
 			'printErr': this.onPrintError,
 			'thisProgram': this.executable,
+			// 允许 Godot main 退出时结束 Emscripten runtime。
 			'noExitRuntime': false,
+			// side.wasm 和额外 GDExtension 会在主模块之后加载。
 			'dynamicLibraries': [`${loadPath}.side.wasm`].concat(this.gdextensionLibs),
 			'instantiateWasm': function (imports, onSuccess) {
+				// WebAssembly.instantiate 返回 Promise；成功后把实例和模块交回 Emscripten。
 				WebAssembly.instantiate(curBuffer, imports).then((result) => {
 					onSuccess(result['instance'], result['module']);
 				});
 				return {};
 			},
 			'locateFile': function (path) {
+				// Godot 的默认文件名会被统一映射到本项目最终导出的 engine.* 文件名。
 				if (!path.startsWith('godot.')) {
 					return path;
 				} else if (path.endsWith('.audio.worklet.js')) {
@@ -321,10 +251,13 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 
 	/**
 	 * @ignore
+	 * 生成 Godot main 使用的 Canvas、语言、输入和退出配置。
+	 * 最近调用方：engine.js 的 Engine.start()。
+	 * 最顶层入口：GameApp.InitEngine() -> GameApp.initEngine() -> curGame.start()。
 	 * @param {function()} cleanup
 	 */
 	Config.prototype.getGodotConfig = function (cleanup) {
-		// Try to find a canvas
+		// 普通浏览器模式必须找到一个 HTMLCanvasElement；小游戏模式由宿主提供画面。
 		if (typeof miniEngine === 'undefined' || !miniEngine){
 			if (!(this.canvas instanceof HTMLCanvasElement)) {
 				const nodes = document.getElementsByTagName('canvas');
@@ -337,12 +270,12 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 				}
 			}
 		}
-		// Canvas can grab focus on click, or key events won't work.
+		// tabIndex < 0 表示不可通过键盘获得焦点；改为 0 后键盘输入才能进入 Canvas。
 		if (this.canvas.tabIndex < 0) {
 			this.canvas.tabIndex = 0;
 		}
 
-		// Browser locale, or custom one if defined.
+		// 没指定语言时，从浏览器首选语言推导；Godot 使用下划线格式。
 		let locale = this.locale;
 		if (!locale) {
 			locale = navigator.languages ? navigator.languages[0] : navigator.language;
@@ -351,7 +284,7 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 		locale = locale.replace('-', '_');
 		const onExit = this.onExit;
 
-		// Godot configuration.
+		// 返回给 Module.initConfig() 的 Godot 运行配置对象。
 		return {
 			'canvas': this.canvas,
 			'canvasResizePolicy': this.canvasResizePolicy,
@@ -361,7 +294,8 @@ const InternalConfig = function (initConfig) { // eslint-disable-line no-unused-
 			'focusCanvas': this.focusCanvas,
 			'onExecute': this.onExecute,
 			'onExit': function (p_code) {
-				cleanup(); // We always need to call the cleanup callback to free memory.
+				// 退出前清理 rtenv 和临时资源，再转发给宿主自己的 onExit。
+				cleanup();
 				if (typeof (onExit) === 'function') {
 					onExit(p_code);
 				}

@@ -1,6 +1,8 @@
-// SPX-owned Emscripten bridge library.
+// SPX 自有的 Emscripten JavaScript 桥接库。
 const GodotGdspx = {
 	$GodotGdspx__deps: ['$GodotRuntime', '$GodotFS', '$GodotDisplayScreen'],
+	// Emscripten 完成 JS Library 合并后执行，把 SPX 文件系统/线程辅助函数挂到 Module。
+	// 最近调用方：Emscripten 生成的 Godot Module 初始化代码；最顶层入口：Engine.init() -> Godot(gdmodule)。
 	$GodotGdspx__postset: [
 		'Module["getPThread"] = GodotGdspx.getPThread;',
 		'Module["deleteDirFS"] = GodotGdspx.removeDir;',
@@ -97,7 +99,7 @@ const GodotGdspx = {
 			return FS.stat(path).size;
 		},
 
-		// Go's syscall/js bridge represents int64 values as two uint32 parts.
+		// Go 的 syscall/js 桥把 int64 表示成 low/high 两个 uint32 数值。
 		splitInt64: function (value) {
 			return {
 				'low': Number(value & 0xffffffffn),
@@ -105,7 +107,9 @@ const GodotGdspx = {
 			};
 		},
 
-		dispatch: function (eventName, ...args) {
+			// 将一个已经转成 JavaScript 类型的 Godot 事件交给 Go WASM。
+			// 最近调用方：本文件的 godot_js_spx_on_* 回调；最顶层来源：Godot C++ 生命周期或游戏事件。
+			dispatch: function (eventName, ...args) {
 			const ffi = globalThis['FFI'];
 			if (ffi) {
 				ffi['gdspx_dispatch'](eventName, ...args);
@@ -211,17 +215,24 @@ const GodotGdspx = {
 		GodotRuntime.setHeapValue(heightPtr, Math.floor(window.innerHeight * scale), 'i32');
 	},
 
-	// Internal session boundary, called again when a reset runtime restarts.
+	// 接触事件会话边界；runtime reset 后重新启动时还会再调用一次。
 	godot_js_spx_contact_session_start__sig: 'v',
 	godot_js_spx_contact_session_start: function () {
 		GodotGdspx.setContactSessionActive(true);
 	},
 
-	// godot gdspx extensions
+	// Godot 启动阶段的 SPX 回调入口。
+	// C++ 侧在 godot_js_spx_callback.cpp 中把 on_engine_start 回调注册为
+	// godot_js_spx_on_engine_start；Godot 开始运行时会从 WASM 调到这里。
+	// 最近调用方：SpxEngine::on_awake()；最顶层入口：Godot SceneTree 主循环 start 阶段。
 	godot_js_spx_on_engine_start__sig: 'v',
 	godot_js_spx_on_engine_start: async function () {
+		// 先开启接触事件会话，避免 Go WASM 启动后丢失碰撞事件。
 		GodotGdspx.setContactSessionActive(true);
+		// Go WASM 尚未完成初始化前，暂时不让 dispatch 使用旧的 FFI。
 		globalThis['FFI'] = null;
+		// initExtensionWasm 由 webworker/go.wasm.loader.js 暴露到当前 Worker 的
+		// self 上。普通模式也可以提供同名入口，但 Worker 模式由它加载 ispx.wasm。
 		if (typeof self['initExtensionWasm'] === 'function') {
 			await self['initExtensionWasm']();
 			return;
@@ -229,6 +240,7 @@ const GodotGdspx = {
 		GodotRuntime.error('Missing self.initExtensionWasm for gdspx web callbacks.');
 	},
 
+	// 最近调用方：SpxEngine::on_update()；最顶层来源：Godot 每个逻辑/渲染帧。
 	godot_js_spx_on_engine_update__sig: 'vf',
 	godot_js_spx_on_engine_update: function (delta) {
 		// Reclaim transient arrays once per Update, across all FixedUpdate calls.
@@ -239,22 +251,26 @@ const GodotGdspx = {
 		GodotGdspx.dispatch("OnEngineUpdate", delta);
 	},
 
+	// 最近调用方：SpxEngine::on_fixed_update()；最顶层来源：Godot 每个物理帧。
 	godot_js_spx_on_engine_fixed_update__sig: 'vf',
 	godot_js_spx_on_engine_fixed_update: function (delta) {
 		GodotGdspx.flushContactEvents();
 		GodotGdspx.dispatch("OnEngineFixedUpdate", delta);
 	},
 
+	// 最近调用方：SpxEngine::shutdown()；最顶层来源：Godot 主循环/模块销毁。
 	godot_js_spx_on_engine_destroy__sig: 'v',
 	godot_js_spx_on_engine_destroy: function () {
 		GodotGdspx.endContactSession("OnEngineDestroy");
 	},
 
+	// 最近调用方：SpxEngine::shutdown() 完成 C++ 清理后；最顶层来源：Godot 主循环销毁。
 	godot_js_spx_on_engine_destroyed__sig: 'v',
 	godot_js_spx_on_engine_destroyed: function () {
 		GodotGdspx.dispatch("OnEngineDestroyed");
 	},
 
+	// 最近调用方：SpxEngine::_do_reset()；最顶层入口：Web 停止本局游戏或异常恢复。
 	godot_js_spx_on_engine_reset__sig: 'v',
 	godot_js_spx_on_engine_reset: function () {
 		GodotGdspx.endContactSession("OnEngineReset");

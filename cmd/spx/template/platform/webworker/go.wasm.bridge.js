@@ -1,12 +1,14 @@
 /**
- * Go WASM Bridge for Godot Workers
- * 
- * This file provides a complete solution for integrating Go WASM modules in Godot Workers,
- * including module loading, function calling, error handling, and performance optimization.
+ * Worker 中的 Go WASM 桥接器。
+ *
+ * 这个类不创建 Worker，也不负责 Godot 的游戏帧循环；Worker 由 Emscripten 的
+ * PROXY_TO_PTHREAD 创建。它只负责在已经存在的 Worker 中加载 ispx.wasm、启动 Go
+ * 运行时，并把 Go 导出的 JavaScript 函数交给 Godot 的 JS 桥使用。
  */
 
 class GoWasmBridge {
     constructor() {
+        // 由 loadGoWasmModule() 创建实例；初始化完成后由 loader 保存到 self.goBridge。
         this.goInstance = null;
         this.goRuntime = null;
         this.isReady = false;
@@ -14,35 +16,36 @@ class GoWasmBridge {
         this.callCounter = 0;
         this.activeCalls = new Map();
         
-        // Configuration options
+        // Go WASM 的加载路径、调用超时和调试开关。
         this.config = {
             wasmPath: './main.wasm',
-            timeout: 10000, // 10 second timeout
+            timeout: 10000,
             enableDebug: false
         };
-        
-        // Bind methods
+
+        // 绑定 this，确保这些函数作为 Promise 回调执行时仍指向当前桥接器实例。
         this.loadGoModule = this.loadGoModule.bind(this);
         this.callGoFunction = this.callGoFunction.bind(this);
         this.handleGoMessage = this.handleGoMessage.bind(this);
     }
-    
+
     /**
-     * Initialize Go WASM module
-     * @param {Object} options Configuration options
-     * @returns {Promise} Initialization Promise
+     * 初始化 Go WASM。
+     *
+     * 调用来源：Worker 的 go.wasm.loader.js -> loadGoWasmModule()。
+     * 调用结果：先加载 Go 运行时，再实例化 ispx.wasm，最后启动 go.run()。
      */
     async initialize(options = {}) {
-        // Merge options
+        // 把 loader 传入的 wasmPath、timeout 等配置合并到默认配置。
         Object.assign(this.config, options);
         
         try {
             this.log('Initializing Go WASM module...');
             
-            // Load Go runtime
+            // 加载 go.wasm.exec.js 并创建 Go 运行时对象。
             await this.loadGoRuntime();
-            
-            // Load Go WASM module
+
+            // 下载、实例化并运行 ispx.wasm。
             await this.loadGoModule();
             
             this.log('Go WASM module initialization complete');
@@ -55,18 +58,20 @@ class GoWasmBridge {
     }
     
     /**
-     * Load Go runtime
-     * @returns {Promise}
+     * 加载 Go 的 JavaScript 运行时并创建 Go 对象。
+     *
+     * 调用来源：initialize()。
+     * 这里的 new Go() 来自 go.wasm.exec.js，不是创建 Worker。
      */
     loadGoRuntime() {
         return new Promise((resolve, reject) => {
             try {
-                // Import Go runtime script
+                // Worker 中使用 importScripts() 引入 Go 运行时脚本。
                 if (this.config.runtimePath !== undefined && this.config.runtimePath !== null && this.config.runtimePath !== '') {
                     importScripts(this.config.runtimePath);
                 }
-                
-                // Create Go instance
+
+                // Go 对象负责提供 importObject，并在后面启动 Go WASM。
                 this.goRuntime = new Go();
                 this.log('Go runtime loaded successfully');
                 resolve();
@@ -78,29 +83,30 @@ class GoWasmBridge {
     }
     
     /**
-     * Load Go WASM module
-     * @returns {Promise}
+     * 下载、实例化并启动 Go WASM。
+     *
+     * 调用来源：initialize()。
+     * 关键步骤是 goRuntime.run(goInstance)，它启动 Go 的 main()、goroutine 和
+     * syscall/js；它不是 Godot 的游戏帧循环。
      */
     async loadGoModule() {
         try {
-            // Fetch WASM bytes
+            // 从 Module.gameAssetURLs['ispx.wasm'] 下载 Go WASM 二进制。
             const wasmBytes = await this.fetchWasm(this.config.wasmPath);
-            
-            // Instantiate WASM module
+
+            // 使用 Go 运行时提供的 importObject 创建 Go WASM 实例。
             const wasmModule = await WebAssembly.instantiate(wasmBytes, this.goRuntime.importObject);
             this.goInstance = wasmModule.instance;
-            
-            // Set up message listener
+
+            // 接管 Go 运行时可能通过 self.postMessage 发出的内部通知。
             this.setupMessageHandling();
-            
-            // Create a Promise to wait for Go module readiness
+
+            // 等待 Go 导出的 JavaScript 函数出现，避免后续调用早于 Go 初始化完成。
             const readyPromise = new Promise((resolve, reject) => {
-                // Setup timeout check
                 const timeout = setTimeout(() => {
                     reject(new Error('Go module initialization timed out'));
                 }, this.config.timeout || 15000);
-                
-                // Save resolve function for module-ready callback
+
                 this._moduleReadyResolve = () => {
                     clearTimeout(timeout);
                     clearInterval(checkInterval);
@@ -113,7 +119,7 @@ class GoWasmBridge {
                     reject(error);
                 };
                 
-                // Fallback mechanism: poll for Go functions availability
+                // 当前实现同时使用轮询作为兜底：Go 运行后，导出函数会挂到 Worker 的 self 上。
                 const checkInterval = setInterval(() => {
                     const availableFunctions = this.getAvailableGoFunctions();
                     if (availableFunctions.length > 0) {
@@ -124,7 +130,7 @@ class GoWasmBridge {
                 }, 100); // Check every 100ms
             });
             
-            // Run Go program (asynchronously)
+            // 启动 Go WASM。Go 的 main() 会在这里开始运行，并注册 syscall/js 函数。
             this.goRuntime.run(this.goInstance).catch(error => {
                 this.error('Go program execution failed:', error);
                 if (this._moduleReadyReject) {
@@ -134,7 +140,7 @@ class GoWasmBridge {
             
             this.log('Go WASM module initialization started, waiting for readiness...');
             
-            // Await Go module readiness
+            // 等待轮询或 Go 的 ready 通知确认函数已经可调用。
             await readyPromise;
             
             this.log('Go WASM module loaded and initialized successfully');
@@ -145,9 +151,10 @@ class GoWasmBridge {
     }
     
     /**
-     * Fetch WASM bytes
-     * @param {string} wasmPath WASM file path
-     * @returns {Promise<ArrayBuffer>}
+     * 下载 WASM 文件。
+     *
+     * 调用来源：loadGoModule()。
+     * 返回值是 WebAssembly.instantiate() 所需的二进制字节。
      */
     async fetchWasm(wasmPath) {
         try {
@@ -162,10 +169,14 @@ class GoWasmBridge {
     }
     
     /**
-     * Set up message handling mechanism
+     * 安装 Go 消息处理包装。
+     *
+     * 调用来源：loadGoModule()。
+     * 它不负责主线程与 Worker 的游戏消息分发；后者由 go.wasm.loader.js 和
+     * WorkerMessageManager 处理。这里仅识别 Go 运行时发出的内部消息。
      */
     setupMessageHandling() {
-        // Listen for messages from Go
+        // 保留原始 postMessage，非 Go 消息仍然正常发给主线程。
         const originalPostMessage = self.postMessage;
         self.postMessage = (data) => {
             if (this.isGoMessage(data)) {
@@ -177,9 +188,8 @@ class GoWasmBridge {
     }
     
     /**
-     * Check if message is from Go
-     * @param {*} data Message data
-     * @returns {boolean}
+     * 判断消息是否由 Go 运行时发出。
+     * 调用来源：setupMessageHandling() 的 postMessage 包装器。
      */
     isGoMessage(data) {
         return data && typeof data === 'object' && 
@@ -187,8 +197,8 @@ class GoWasmBridge {
     }
     
     /**
-     * Handle message from Go
-     * @param {Object} data Message data
+     * 处理 Go 运行时发出的内部消息。
+     * 调用来源：setupMessageHandling()，当前实现主要处理 ready 通知。
      */
     handleGoMessage(data) {
         switch (data.cmd) {
@@ -199,29 +209,29 @@ class GoWasmBridge {
                 this.handleGoFunctionCall(data);
                 break;
             default:
-                this.log('Received unknown Go message:', data);
+                this.log('收到未知的 Go 消息:', data);
         }
     }
     
     /**
-     * Handle Go module readiness message
-     * @param {Object} data Message data
+     * 处理 Go WASM 已经就绪的通知。
+     * 调用来源：handleGoMessage() 的 goReady 分支。
      */
     handleGoReady(data) {
         this.isReady = true;
         this.log('Go module is ready, available functions:', data.functions);
         
-        // Process pending function calls
+        // Go 已经可调用，执行初始化期间暂存的调用。
         this.processPendingCalls();
         
-        // If there's a pending init Promise, resolve it
+        // 唤醒 initialize() 中等待 Go 就绪的 Promise。
         if (this._moduleReadyResolve) {
             this._moduleReadyResolve();
             this._moduleReadyResolve = null;
             this._moduleReadyReject = null;
         }
         
-        // Notify main thread
+        // 通知主线程（如果当前 Worker 的宿主需要这个状态）。
         self.postMessage({
             cmd: 'goModuleReady',
             availableFunctions: data.functions || [],
@@ -230,7 +240,8 @@ class GoWasmBridge {
     }
     
     /**
-     * Process pending function calls
+     * 执行 Go 尚未就绪时排队的调用。
+     * 调用来源：handleGoReady()。
      */
     processPendingCalls() {
         while (this.pendingCalls.length > 0) {
@@ -240,15 +251,15 @@ class GoWasmBridge {
     }
     
     /**
-     * Call Go function
-     * @param {string} funcName Function name
-     * @param {...*} args Arguments
-     * @returns {Promise} Call result
+     * 调用一个 Go 导出函数。
+     *
+     * 调用来源：go.wasm.loader.js 的 handleCustomCall()/tryRunGoWasm()。
+     * Go 尚未就绪时先排队，ready 后由 executeGoFunction() 执行。
      */
     callGoFunction(funcName, ...args) {
         return new Promise((resolve, reject) => {
             if (!this.isReady) {
-                // Module isn't ready, queue the call
+                // Go 尚未就绪，先保存调用和 Promise 的 resolve/reject。
                 this.pendingCalls.push({ funcName, args, resolve, reject });
                 return;
             }
@@ -257,6 +268,12 @@ class GoWasmBridge {
         });
     }
     
+    /**
+     * 取得 Go 通过 syscall/js 注册到当前 Worker self 上的函数。
+     *
+     * 调用来源：worker.wrap.gen.js 的 BindFFI()。
+     * 典型函数是 gdspx_dispatch；它不是 C++ 函数，而是 Go 暴露的 JS 函数包装器。
+     */
     getGoFunction(funcName){
         const goFunc = self[funcName];
         if (typeof goFunc !== 'function') {
@@ -266,30 +283,28 @@ class GoWasmBridge {
         return goFunc
     }
     /**
-     * Execute Go function
-     * @param {string} funcName Function name
-     * @param {Array} args Argument array
-     * @param {Function} resolve Resolve callback
-     * @param {Function} reject Reject callback
+     * 真正执行 Go 函数，并统一处理同步返回值、Promise 和超时。
+     *
+     * 调用来源：callGoFunction()。
      */
     executeGoFunction(funcName, args, resolve, reject) {
         try {
-            // Verify function exists
+            // Go 的 syscall/js 会把导出函数挂到当前 Worker 的 self 上。
             const goFunc = self[funcName];
             if (typeof goFunc !== 'function') {
                 reject(new Error(`Go function ${funcName} does not exist`));
                 return;
             }
             
-            // Set timeout
+            // 防止 Go 函数长期不返回导致调用方一直等待。
             const timeoutId = setTimeout(() => {
                 reject(new Error(`Go function ${funcName} call timed out`));
             }, this.config.timeout);
             
-            // Call function
+            // 直接调用当前 Worker 中的 Go JavaScript 包装函数。
             const result = goFunc(...args);
             
-            // Handle return value
+            // Go 函数可能同步返回，也可能返回 Promise。
             if (result && typeof result.then === 'function') {
                 // Promise return value
                 result
@@ -313,9 +328,8 @@ class GoWasmBridge {
     }
     
     /**
-     * Call multiple Go functions
-     * @param {Array} calls Call configuration array [{funcName, args}, ...]
-     * @returns {Promise<Array>} Result array
+     * 按并发方式调用多个 Go 函数并等待全部结果。
+     * 调用来源：当前 Worker 中需要批量调用 Go 的上层代码。
      */
     async callGoFunctions(calls) {
         const promises = calls.map(call => 
@@ -325,8 +339,8 @@ class GoWasmBridge {
     }
     
     /**
-     * Get available Go functions
-     * @returns {Array} Function name array
+     * 枚举当前 Worker 上已经注册的 Go 函数。
+     * 调用来源：loadGoModule() 的就绪轮询，以及调试信息输出。
      */
     getAvailableGoFunctions() {
         const functions = [];
@@ -339,14 +353,13 @@ class GoWasmBridge {
     }
     
     /**
-     * Safely call Go function (with complete error handling)
-     * @param {string} funcName Function name
-     * @param {...*} args Arguments
-     * @returns {Promise} Call result
+     * 带参数校验和错误处理的 Go 函数调用入口。
+     * 调用来源：go.wasm.loader.js 的 go_wasm_init、ispx_build、ispx_start，
+     * 以及主线程 customCall 转发。
      */
     async callGoFunctionSafe(funcName, ...args) {
         try {
-            // Validate parameters
+            // 函数名必须是有效的字符串。
             if (!funcName || typeof funcName !== 'string') {
                 throw new Error('Function name must be a valid string');
             }
@@ -355,7 +368,7 @@ class GoWasmBridge {
                 throw new Error('Go module is not ready');
             }
             
-            // Call function
+            // 委托给 callGoFunction() 执行，并等待返回结果。
             const result = await this.callGoFunction(funcName, ...args);
             
             // Validate result
@@ -383,56 +396,47 @@ class GoWasmBridge {
     }
     
     /**
-     * Call Go function with transferable data
-     * @param {string} funcName Function name
-     * @param {ArrayBuffer} transferableData Transferable data
-     * @param {...*} args Other arguments
-     * @returns {Promise} Call result
+     * 使用可转移数据调用 Go 函数。
+     * 调用来源：需要传输 ArrayBuffer 的 Worker 业务代码；当前实现仍复用普通调用。
      */
     async callGoFunctionWithTransfer(funcName, transferableData, ...args) {
-        // Note: Optimizing transferable objects inside worker is limited
-        // But this interface reserves space for future optimizations
+        // 当前没有单独优化 transferable 对象，这个接口为后续优化保留。
         return this.callGoFunction(funcName, transferableData, ...args);
     }
     
     /**
-     * Destroy Go module instance
+     * 清理 Go WASM 桥接器状态。
+     * 调用来源：需要重启或销毁 Worker 内 Go 模块的上层生命周期代码。
      */
     destroy() {
         this.log('Destroying Go WASM module instance');
         
-        // Clean up pending calls
+        // 拒绝尚未执行的调用，避免调用方永久等待。
         this.pendingCalls.forEach(call => {
             call.reject(new Error('Go module has been destroyed'));
         });
         this.pendingCalls = [];
         
-        // Clean up active calls
+        // 清理已经开始但仍处于等待状态的调用。
         this.activeCalls.forEach(call => {
             call.reject(new Error('Go module has been destroyed'));
         });
         this.activeCalls.clear();
         
-        // Reset state
+        // 清空实例状态；这不会自动重新创建 Go WASM。
         this.isReady = false;
         this.goInstance = null;
         this.goRuntime = null;
     }
     
-    /**
-     * Log output
-     * @param {...*} args Log arguments
-     */
+    /** 输出调试日志。 */
     log(...args) {
         if (this.config.enableDebug) {
             console.log('[GoWasmBridge]', ...args);
         }
     }
     
-    /**
-     * Error log output
-     * @param {...*} args Error arguments
-     */
+    /** 输出错误日志。 */
     error(...args) {
         console.error('[GoWasmBridge]', ...args);
     }
@@ -440,13 +444,13 @@ class GoWasmBridge {
 
 // Export for Worker usage
 if (typeof self !== 'undefined' && typeof module === 'undefined') {
-    // Directly use in Worker environment
+    // Worker 环境使用 self 暴露构造器，go.wasm.loader.js 才能 new GoWasmBridge()。
     self.GoWasmBridge = GoWasmBridge;
 } else if (typeof module !== 'undefined' && module.exports) {
-    // Node.js environment
+    // Node.js 测试环境使用 CommonJS 导出。
     module.exports = GoWasmBridge;
 } else if (typeof window !== 'undefined') {
-    // Browser environment
+    // 普通浏览器环境挂到 window；Worker 模式不会走这里。
     window.GoWasmBridge = GoWasmBridge;
 }
 

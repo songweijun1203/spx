@@ -72,6 +72,9 @@ void SpxEngine::register_runtime_reset_callbacks(GDExtensionSpxGlobalRuntimeRese
 	_register_runtime_callback(&SpxEngine::on_runtime_reset, callback, __func__);
 }
 
+// 创建进程内唯一的 SpxEngine，并创建其持有的全部 C++ Manager。
+// Web 最近调用方：spx_web_register_callbacks()；Native 最近调用方：gdspx_init()。
+// Web 最顶层入口：engine.js -> Module.callMain() -> initialize_spx_module(CORE)。
 void SpxEngine::register_callbacks(GDExtensionSpxCallbackInfoPtr callback_ptr) {
 	if (singleton != nullptr) {
 		print_error("SpxEngine::register_callbacks failed, already initialized!");
@@ -137,6 +140,10 @@ void SpxEngine::set_root_node(SceneTree *p_tree, Node *p_node) {
 	}
 }
 
+// 唤醒并启动全部 C++ Manager，然后通知上层“SPX 引擎已经启动”。
+// 最近调用方：Spx::on_start()。
+// 最顶层入口：Godot SceneTree 主循环 start 阶段。
+// 顺序很重要：Manager.on_start() 早于 callbacks.func_on_engine_start()。
 void SpxEngine::on_awake() {
 	if (has_exit || managers_awake) {
 		return;
@@ -151,6 +158,8 @@ void SpxEngine::on_awake() {
 	}
 }
 
+// 最近调用方：Spx::on_fixed_update()；最顶层来源：Godot 物理帧。
+// 先更新 C++ Managers，再通过 Web JS/Native ABI 回调 Go。
 void SpxEngine::on_fixed_update(float delta) {
 	if (has_exit) {
 		return;
@@ -167,6 +176,8 @@ void SpxEngine::on_fixed_update(float delta) {
 	}
 }
 
+// 最近调用方：Spx::on_update()；最顶层来源：Godot 每帧主循环。
+// 顺序为 C++ Managers -> Go 回调 -> 画笔命令 flush。
 void SpxEngine::on_update(float delta) {
 	if (has_exit) {
 		return;
@@ -237,6 +248,8 @@ void SpxEngine::on_exit(int exit_code) {
 	callbacks.func_on_engine_destroyed = on_engine_destroyed;
 }
 
+// 重置一局 SPX 游戏但保留 Godot 进程/WASM，便于 Web 下一局复用底层引擎。
+// 最近调用方：Spx::reset()；最顶层入口：Go RequestExit -> ExtMgr.RequestReset，或页面异常恢复。
 void SpxEngine::on_reset(int reset_code) {
 	if (is_spx_reset) {
 		return;
@@ -251,6 +264,8 @@ bool SpxEngine::is_reset() {
 	return is_spx_reset;
 }
 
+// 从 reset 状态恢复各 Manager。
+// 最近调用方：Spx::restart()；最顶层入口：GameApp.startGame()。
 void SpxEngine::restart() {
 	if (!is_spx_reset) {
 		return;

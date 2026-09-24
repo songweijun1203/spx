@@ -208,6 +208,12 @@ func CallGlobalRegisterCallbacks(
 	C.cgo_callfn_GDExtensionSpxGlobalRegisterCallbacks(arg0, arg1)
 }
 
+// resolveAPIFunctions 解析 Native 启动和数据转换所需的基础函数地址。
+//
+// 平台：仅 Native。
+// 调用时机：Godot 加载扩展并进入 gdspx_init() 时。
+// 直接上级：gdspx_init()。
+// 跨模块来源：Godot 提供 lookupFunc，resolveCFunc 再按名称查询 godot_modules/Godot API。
 func (x *GDExtensionBuiltinInterface) resolveAPIFunctions() {
 	x.SpxGlobalRegisterCallbacks = (GDExtensionSpxGlobalRegisterCallbacks)(resolveCFunc("spx_global_register_callbacks"))
 	x.SpxGlobalFreeString = (GDExtensionSpxGlobalFreeString)(resolveCFunc("spx_global_free_string"))
@@ -219,6 +225,8 @@ func (x *GDExtensionBuiltinInterface) resolveAPIFunctions() {
 	x.VariantGetPtrDestructor = (GDExtensionInterfaceVariantGetPtrDestructor)(resolveCFunc("variant_get_ptr_destructor"))
 }
 
+// stringInitConstructorBindings 缓存 Godot String 的构造器和析构器。
+// 直接上级：doInitialization()；执行时 builtinAPI 必须已经解析完成。
 func stringInitConstructorBindings() {
 	globalStringMethodBindings.constructor = CallVariantGetPtrConstructor(GDEXTENSION_VARIANT_TYPE_STRING, 0)
 	globalStringMethodBindings.destructor = CallVariantGetPtrDestructor(GDEXTENSION_VARIANT_TYPE_STRING)

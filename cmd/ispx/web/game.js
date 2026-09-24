@@ -1,21 +1,39 @@
+/*
+ * Web 游戏总编排器。
+ *
+ * 本文件不实现 Godot 引擎本身，而是协调三部分：
+ * 1. engine.js 提供的 Godot Engine 启动器；
+ * 2. ispx.wasm 中的 Go/XGo 游戏运行时；
+ * 3. engine.zip、game.zip 解压后得到的引擎资源和项目资源。
+ *
+ * 最近调用方：runner.html 暴露的 window.initEngine/initGame/startGame/stopGame。
+ * 最顶层入口：浏览器加载页面后，由外层页面初始化引擎；用户点击 Start 后启动一局游戏。
+ */
+
+// Godot WASM 的 Emscripten Module。Engine.init() 成功后会指向实际运行时对象。
 var Module = null
 
 /**
  * @typedef {Object} FileMeta
- * @property {number} lastModified Last modified time in milliseconds since Unix epoch.
+ * @property {number} lastModified 文件最后修改时间，单位为 Unix 毫秒。
  */
 
 /**
  * @typedef {Object} FileWithMeta
- * @property {number} lastModified Last modified time in milliseconds since Unix epoch.
- * @property {ArrayBuffer} content File content as ArrayBuffer.
+ * @property {number} lastModified 文件最后修改时间，单位为 Unix 毫秒。
+ * @property {ArrayBuffer} content 文件的二进制内容。
  */
 
 /**
- * @typedef {{ [path: string]: FileWithMeta }} Files - File entries only; directories should be omitted.
+ * @typedef {{ [path: string]: FileWithMeta }} Files 只包含文件，目录项应被忽略。
  * @typedef {{ [path: string]: FileMeta }} FilesMeta
  */
 
+/**
+ * 管理一个浏览器页面中的 Godot 引擎实例及多次 SPX 游戏会话。
+ * 最近创建方：runner.html 的 window.initEngine()。
+ * 最顶层入口：外层页面的 initializeRuntime()，或宿主直接调用 window.initEngine()。
+ */
 class GameApp {
     constructor(config) {
         config = config || {};
@@ -57,25 +75,38 @@ class GameApp {
         this.logVerbose("EnginePackMode: ", EnginePackMode)
 
         /**
-         * Project files meta
+         * 上一次同步到引擎的项目文件元信息，用于判断文件是否发生变化。
          * @type FilesMeta
          */
         this.projectFilesMeta = {};
     }
 
+    /**
+     * 初始化并启动底层 Godot 引擎，但不编译、运行具体的 .spx 游戏。
+     * 最近调用方：runner.html 的 window.initEngine()。
+     * 最顶层入口：浏览器页面初始化流程。
+     */
     async InitEngine() {
         return this.startTask(() => this.initEngine())
     }
 
     /**
-     * Initialize game with given game files. It is expected to be called after `InitEngine`, while before `StartGame`.
-     * @param {Files} files
-     * @returns Promise<void>
+     * 把当前项目文件写入 Godot 文件系统，并把 .spx/.json 交给 Go 解释器编译。
+     * 最近调用方：runner.html 的 window.initGame()。
+     * 最顶层入口：外层页面下载并解压 game.zip 后的 startProjectSession()。
+     * 调用顺序：必须位于 InitEngine() 之后、StartGame() 之前。
+     * @param {Files} files 项目文件表。
+     * @returns {Promise<void>}
      */
     async InitGame(files) {
         return this.startTask(() => this.initGame(files))
     }
 
+    /**
+     * 启动已经编译好的本局游戏逻辑。
+     * 最近调用方：runner.html 的 window.startGame()。
+     * 最顶层入口：用户点击 Start，或宿主主动调用页面的 startGame()。
+     */
     async StartGame(options = {}) {
         const inputSession = options && typeof options.then === 'function'
             ? Promise.resolve(options).then((resolved) => this.normalizeStartGameInput(resolved))
@@ -83,11 +114,21 @@ class GameApp {
         return this.startTask(async () => this.startGame(await inputSession))
     }
 
+    /**
+     * 引擎崩溃后复用统一停止流程，清理当前游戏会话但不要求正常完成输入录制。
+     * 最近调用方：runner.html 的 window.initEngine() 在已有 GameApp 时调用。
+     * 最顶层入口：Godot/Go WASM 的退出或崩溃恢复流程。
+     */
     async ResetGame() {
         this.stopGameTask++;
         return this.startTask(() => this.stopGame(false))
     }
 
+    /**
+     * 正常停止本局游戏；Web 下主要重置 SPX runtime，Godot WASM 通常继续存活。
+     * 最近调用方：runner.html 的 window.stopGame()。
+     * 最顶层入口：用户点击 Stop，或宿主主动停止游戏。
+     */
     async StopGame(beforeStop = null) {
         if (beforeStop != null && typeof beforeStop !== 'function') {
             throw new TypeError('beforeStop must be a function')
@@ -112,6 +153,7 @@ class GameApp {
         return await Module.tryStopRecording()
     }
 
+    // 最近调用方：Engine 配置中的 onExit；最顶层来源：Godot main 正常退出。
     onGodotExit(code) {
         this.completeGameLifecycle(code)
         this.game = null
@@ -121,10 +163,16 @@ class GameApp {
 
     }
 
+    // 最近调用方：runner.html 的 runtime reset/崩溃处理；最顶层来源：一局游戏结束或异常重置。
     onRuntimeReset(code) {
         this.completeGameLifecycle(code)
     }
 
+    /**
+     * 请求 C++ SpxEngine 从 reset 状态恢复并重新执行各 Manager.on_start()。
+     * 最近调用方：startGame()；最顶层入口：用户启动新一局游戏。
+     * 首次启动时若 C++ runtime 尚未处于 reset 状态，该调用可以是空操作。
+     */
     restart() {
         let funPtr = this.game.rtenv["_gdspx_ext_request_restart"]
         if(funPtr != null){
@@ -213,12 +261,17 @@ class GameApp {
         }
     }
 
+    /**
+     * 将初始化、启动、停止任务串行化，防止多个异步生命周期操作交叉执行。
+     * 最近调用方：InitEngine/InitGame/StartGame/StopGame/ResetGame。
+     * 最顶层入口：runner.html 暴露给宿主的同名操作。
+     */
     startTask(taskFunc) {
         const originalPromise = this.logicPromise;
         const newPromise = this.logicPromise.then(() => taskFunc());
         this.logicPromise = newPromise;
         newPromise.catch((err) => {
-            // If an error occurs, reset logicPromise to originalPromise to avoid blocking subsequent tasks.
+            // 当前任务失败后恢复原任务链，避免后续操作永远被一个 rejected Promise 阻断。
             if (this.logicPromise === newPromise) this.logicPromise = originalPromise;
         })
         return this.logicPromise
@@ -232,6 +285,14 @@ class GameApp {
         return this.normalizeInputSession(options.input)
     }
 
+    /**
+     * 完成一次底层 Web 引擎启动。
+     * 最近调用方：InitEngine() 经 startTask() 调用。
+     * 最顶层入口：runner.html 的 window.initEngine()。
+     *
+     * 普通模式顺序：下载 engine.wasm -> 启动 ispx.wasm 宿主 -> 实例化 Godot WASM
+     * -> 写入 engine.zip -> Module.callMain() -> Godot 进入主循环。
+     */
     async initEngine() {
         await profiler.profile('onRunPrepareEngineWasm', () => this.onRunPrepareEngineWasm());
 
@@ -258,9 +319,12 @@ class GameApp {
         this.game = new Engine(this.gameConfig);
         let curGame = this.game;
 
-        // register global functions
+        // 先提供两个占位函数，避免 Godot/Go 任一侧较早查询时得到 undefined。
+        // Go 真正执行 webffi.Link() 后会用 syscall/js 覆盖它们。
         window.go_wasm_init = function () { }
         window.gdspx_dispatch = function () { }
+        // 把 Go -> Godot 的全部 gdspx_* JS 包装方法挂到当前 globalThis。
+        // 方法现在可以被 Go 找到，但要等 Engine.init() 设置 Module 后才能真正调用 C++。
         const spxfuncs = new GdspxFuncs();
         const methodNames = Object.getOwnPropertyNames(Object.getPrototypeOf(spxfuncs));
         methodNames.forEach(key => {
@@ -269,21 +333,26 @@ class GameApp {
             }
         });
 
+        //[1] 加载并启动 ispx.wasm
         await profiler.profile('onRunBeforeInit', () => this.onRunBeforeInit());
         this.onProgress(0.5);
 
+        //[2] 最近调用：GameApp.initEngine()；进入 engine.js 的 Engine.init()，实例化 Godot WASM。
         await profiler.profile('curGame.init',  () => curGame.init());
 
         this.onProgress(0.6);
 
+        // engine.zip 是 Godot/SPX 的基础资源包，不是用户项目 game.zip。
         await profiler.profile('unpackData', () => this.unpackEngineData(curGame));
 
         this.onProgress(0.7);
 
+        //[3]执行启动后的平台准备
         await profiler.profile('onRunAfterInit', () => this.onRunAfterInit(curGame));
 
         this.onProgress(0.8);
 
+        //[4] 进入 engine.js 的 Engine.start()，其内部最终调用 Module.callMain()。
         await profiler.profile('curGame.start', () => curGame.start({ 'args': args, 'canvas': this.gameCanvas }));
 
         this.onProgress(1.0);
@@ -291,9 +360,11 @@ class GameApp {
     }
 
     /**
-     * @private Initialize game with given game files
-     * @param {Files} files
-     * @returns Promise<void>
+     * 同步项目资源与脚本编译，是“引擎已启动”到“本局可启动”之间的准备阶段。
+     * 最近调用方：InitGame() 经 startTask() 调用。
+     * 最顶层入口：外层页面的 startProjectSession()。
+     * @param {Files} files 项目文件表。
+     * @returns {Promise<void>}
      */
     async initGame(files) {
         await profiler.profile('updateEngineFiles', () => this.updateEngineFiles(files));
@@ -301,8 +372,9 @@ class GameApp {
     }
 
     /**
-     * (Incrementally) Update engine files with given game files.
-     * @param {Files} files
+     * 增量更新 Godot 虚拟文件系统中的项目文件，并通知 SpxResMgr 刷新资源。
+     * 最近调用方：initGame()；最顶层入口：GameApp.InitGame()。
+     * @param {Files} files 项目文件表。
      */
     updateEngineFiles(files) {
         /** @type Array<{ name: string, data: Uint8Array }> */
@@ -311,15 +383,14 @@ class GameApp {
         /** @type FilesMeta */
         const filesMeta = {};
         Object.entries(files).forEach(([path, { lastModified, content }]) => {
-            // ZIP readers expose directory entries with a trailing slash. They
-            // are not files and cannot be written to the engine filesystem.
+            // ZIP 解压器会把目录表示成以 / 结尾的条目；它不是文件，不能写入引擎文件系统。
             if (path.endsWith('/')) {
                 return;
             }
             filesMeta[path] = { lastModified };
             const savedFileMeta = savedFilesMeta[path];
             if (savedFileMeta != null && savedFileMeta.lastModified === lastModified) {
-                return; // file not changed, skip
+                return; // 修改时间未变化，不重复复制文件内容。
             }
             updatedFiles.push({ name: path, data: new Uint8Array(content) });
         });
@@ -337,8 +408,10 @@ class GameApp {
     }
 
     /**
-     * Do spx build with given game files
-     * @param {Files} files
+     * 提取 .spx/.json 并交给 ispx.wasm 编译；图片、音频等资源不参与脚本编译。
+     * 最近调用方：initGame()；最顶层入口：GameApp.InitGame()。
+     * 普通模式立即调用 window.ispx_build()；Worker 模式先缓存，稍后发送给 Worker。
+     * @param {Files} files 项目文件表。
      */
     buildGame(files) {
         if (this.stopGameTask > 0) {
@@ -360,6 +433,11 @@ class GameApp {
         }
     }
 
+    /**
+     * 建立本局生命周期并让 Go 解释器执行游戏 main。
+     * 最近调用方：StartGame() 经 startTask() 调用。
+     * 最顶层入口：用户点击 Start 或宿主调用 window.startGame()。
+     */
     async startGame(inputSession) {
         if (this.stopGameTask > 0) {
             this.logVerbose("stopGame is called before runing game");
@@ -381,6 +459,10 @@ class GameApp {
         profiler.measure('RunGame Start', 'RunGame Done');
     }
 
+    /**
+     * 请求 Go 游戏退出，并等待 C++ runtime reset 回调完成本局生命周期 Promise。
+     * 最近调用方：StopGame()/ResetGame()；最顶层入口：停止、崩溃恢复或重新初始化。
+     */
     async stopGame(finishInputRecording, beforeStop = null) {
         this.stopGameTask--
         const lifecycle = this.gameLifecycle
@@ -428,6 +510,7 @@ class GameApp {
         return { inputReplay, stopped: true }
     }
 
+    // 最近调用方：startGame()；为这一局创建一个可由 reset/exit 回调结束的 Promise。
     beginGameLifecycle(inputSession) {
         if (this.gameLifecycle != null && !this.gameLifecycle.completed) {
             throw new Error('A game is already running')
@@ -447,6 +530,7 @@ class GameApp {
         return lifecycle
     }
 
+    // 最近调用方：Godot 退出、runtime reset 或启动失败处理；唤醒 stopGame() 的等待。
     completeGameLifecycle(code, lifecycle = this.gameLifecycle) {
         if (lifecycle == null || lifecycle.completed) return false
         lifecycle.completed = true
@@ -460,6 +544,10 @@ class GameApp {
         }
     }
 
+    /**
+     * 下载 engine.zip，并把它写到 Godot 虚拟文件系统的 engine/engine.zip。
+     * 最近调用方：initEngine()；最顶层入口：GameApp.InitEngine()。
+     */
     async unpackEngineData(game) {
         let packUrl = this.assetURLs[this.packName]
         let pckData = await (await fetch(packUrl)).arrayBuffer()
@@ -490,8 +578,7 @@ class GameApp {
             throw new TypeError('input session must be an object')
         }
         if (input.mode === 'record') {
-            // Keep the low-level fallback for hosts that instantiate GameApp directly.
-            // The runner facade supplies its configured value before reaching this layer.
+            // 为直接实例化 GameApp 的宿主保留底层默认值；runner 门面通常会在进入本层前补齐配置。
             const fps = input.fps == null ? 30 : input.fps
             if (!Number.isFinite(fps) || fps <= 0) {
                 throw new RangeError('input recording FPS must be greater than zero')
@@ -551,6 +638,10 @@ class GameApp {
         }
     }
 
+    /**
+     * 获取 Godot 的 engine.wasm 二进制；这里的“下载”就是浏览器通过 fetch 加载资源。
+     * 最近调用方：initEngine()；最顶层入口：GameApp.InitEngine()。
+     */
     async onRunPrepareEngineWasm() {
         let url = this.assetURLs["engine.wasm"]
         if (isWasmCompressed) {
@@ -564,6 +655,11 @@ class GameApp {
         }
     }
 
+    /**
+     * 在 Godot WASM 实例化前准备 Go WASM。
+     * 最近调用方：initEngine()；最顶层入口：GameApp.InitEngine()。
+     * 普通模式在这里启动 ispx.wasm 宿主；Worker 模式由 Godot Worker 稍后加载。
+     */
     async onRunBeforeInit() {
         if (this.minigameMode) {
             GameGlobal.engine = this.game;
@@ -576,6 +672,10 @@ class GameApp {
         }
     }
 
+    /**
+     * Godot WASM 已实例化、尚未 callMain 时执行平台补充绑定。
+     * 最近调用方：initEngine()；最顶层入口：GameApp.InitEngine()。
+     */
     async onRunAfterInit(game) {
         if (this.workerMode) {
             this.workerMessageManager.bindMainThreadCallbacks(game)
@@ -585,17 +685,26 @@ class GameApp {
         }
     }
 
+    /**
+     * 启动具体游戏逻辑。
+     * 最近调用方：startGame()；最顶层入口：GameApp.StartGame()。
+     * 普通模式把 FFI 指向 window 后调用 ispx_start；Worker 模式把项目数据发给 PThread Worker。
+     */
     async onRunAfterStart(game, inputSession) {
         if (this.minigameMode) {
             globalThis['FFI'] = self;
             await this.runLogicWasm()
         }
         if (this.workerMode) {
+            // Godot 主循环已经在 pthread Worker 中启动。此时把 Go 游戏需要的
+            // .spx/.json 数据和资源 URL 发给 Worker；Worker 收到后才知道
+            // ispx.wasm 的实际地址，并由 initExtensionWasm() 加载 Go WASM。
             let pthreads = game.getPThread()
             this.workerMessageManager.setPThreads(pthreads)
             this.workerMessageManager.callWorkerProjectDataUpdate(this.nonAssetFiles, this.assetURLs)
         } else {
-            // register global functions
+            // 普通模式下 self 就是 window。library_godot_gdspx.js 将通过
+            // FFI.gdspx_dispatch 找到 Go 在 webffi.Link() 中注册的事件入口。
             Module = game.rtenv;
             globalThis['FFI'] = self;
             const res = window.ispx_start(inputSession);
@@ -604,6 +713,11 @@ class GameApp {
         }
     }
 
+    /**
+     * 下载并实例化 ispx.wasm，但尚未开始执行 Go main()。
+     * 最近调用方：onRunBeforeInit()/onRunAfterInit()。
+     * 最顶层入口：GameApp.InitEngine()。
+     */
     async loadLogicWasm() {
         let url = this.config.assetURLs["ispx.wasm"];
         if (isWasmCompressed) {
@@ -611,9 +725,9 @@ class GameApp {
         }
         this.go = new Go();
         if (this.minigameMode) {
-            // load wasm in miniEngine
+            // 小游戏平台使用宿主支持的 WebAssembly.instantiate()。
             const wasmResult = await WebAssembly.instantiate(url, this.go.importObject);
-            // create compatible instance
+            // 构造与标准 WebAssembly.Instance 兼容的对象。
             this.logicWasmInstance = Object.create(WebAssembly.Instance.prototype);
             this.logicWasmInstance.exports = wasmResult.instance.exports;
             Object.defineProperty(this.logicWasmInstance, 'constructor', {
@@ -640,6 +754,11 @@ class GameApp {
         }
     }
 
+    /**
+     * 调用 Go.run()，启动 ispx.wasm 的 Go main、goroutine 和 syscall/js。
+     * 最近调用方：onRunBeforeInit() 或小游戏 onRunAfterStart()。
+     * 最顶层入口：GameApp.InitEngine()；这里只启动解释器宿主，不等于启动具体游戏。
+     */
     async runLogicWasm() {
         this.go.exit = (code) => {
             this.notifyExit(code);

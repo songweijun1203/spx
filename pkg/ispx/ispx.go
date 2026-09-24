@@ -141,7 +141,8 @@ func XGot_Game_XGox_GetWidget[T any](sg ShapeGetter, name WidgetName) *T {
 	return nil
 }
 
-// Build builds the spx code from the provided files into the interpreter.
+// Build 把 .spx/.json 文件编译进解释器。
+// 最近调用方：Web 的 ispxBuild()；最顶层入口：GameApp.InitGame() 或 Worker tryRunGoWasm()。
 func Build(files map[string][]byte) error {
 	return BuildFS(memfs.New(files))
 }
@@ -169,10 +170,10 @@ func configureFilesystemRoots(projectDir, assetDir string, legacy bool) error {
 	return engine.SetFilesystemRoots(projectDir, assetDir)
 }
 
-// BuildFS builds from a borrowed file system that must remain usable while the
-// Engine can load project resources.
+// BuildFS 从借用的文件系统编译项目；引擎加载项目资源期间，该文件系统必须保持可用。
+// 最近调用方：Build()；最顶层入口：JavaScript ispx_build()。
 func BuildFS(fsys fs.FS) error {
-	// Stop the game if running.
+	// 如果上一局仍在运行，先请求退出再替换解释器。
 	if err := Shutdown(); err != nil {
 		return err
 	}
@@ -184,7 +185,7 @@ func BuildFS(fsys fs.FS) error {
 		panic("ispx: not initialized")
 	}
 
-	// Release previous interpreter resources if any.
+	// 释放上一份解释器资源。
 	if ixgoInterp != nil {
 		ixgoInterp.UnsafeRelease()
 		ixgoInterp = nil
@@ -210,9 +211,8 @@ func BuildFS(fsys fs.FS) error {
 		return fmt.Errorf("failed to create interp: %w", err)
 	}
 
-	// Project resources are loaded lazily from Engine callbacks, so publish
-	// the new schema only after every fallible build step has succeeded. A
-	// failed rebuild must not replace a previously working resource source.
+	// 项目资源会由 Engine 回调延迟加载，所以只有所有可能失败的编译步骤都成功后，
+	// 才发布新的资源 schema；失败的重编译不能覆盖上一份可用资源源。
 	spxfs.RegisterSchema("", func(path string) (spxfs.Dir, error) {
 		return newSpxDir(fsys, path), nil
 	})
@@ -220,8 +220,8 @@ func BuildFS(fsys fs.FS) error {
 	return nil
 }
 
-// Run runs the interpreter. It blocks until the interpreter exits. After it
-// returns, the interpreter must be rebuilt before running again.
+// Run 执行已经编译好的游戏 main.go，并阻塞到解释器退出；返回后必须重新 Build 才能再运行。
+// 最近调用方：ispxStart() 启动的 goroutine；最顶层入口：GameApp.StartGame()。
 func Run() (exitCode int, err error) {
 	mu.Lock()
 	if ixgoInterp == nil {
@@ -246,11 +246,12 @@ func Run() (exitCode int, err error) {
 	return ctx.RunInterp(interp, "main.go", nil)
 }
 
-// Shutdown requests the game to stop and waits for it to exit.
+// Shutdown 请求当前游戏停止并等待退出。
+// 最近调用方：ispxStop() 或下一次 BuildFS()；最顶层入口：GameApp.StopGame()/InitGame()。
 func Shutdown() error {
 	mu.Lock()
 
-	// If running, wait for it to stop.
+	// 游戏运行中时发出退出请求并等待 Run() 返回。
 	for runDone != nil {
 		done := runDone
 		mu.Unlock()

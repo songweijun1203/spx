@@ -44,6 +44,10 @@
 {{ end }}
 #include <emscripten.h>
 
+// Web 平台的 Go/JavaScript -> Godot C++ Manager 导出层。
+// 最近调用方：js/engine/gdspx.js 通过 Module['_gdspx_*'] 调用这些 WASM 导出函数。
+// 最顶层入口：Go 游戏代码 -> manager_web.gen.go -> globalThis.gdspx_*。
+// EMSCRIPTEN_KEEPALIVE 保证链接优化不会删除这些只能从 JavaScript 到达的函数。
 
 extern "C" {
 {{- range $i, $f := $view.AST.CollectGDExtensionInterfaceFunctions -}}

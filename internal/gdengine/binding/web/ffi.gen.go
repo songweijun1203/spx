@@ -376,6 +376,9 @@ type GDExtensionInterface struct {
 	SpxUiSetFlip                                js.Value
 }
 
+// resolveAPIFunctions 获取 Web 平台所有 gdspx_* JavaScript Manager 函数。
+// 调用时机：Go 游戏执行 webffi.Link() 时。
+// 直接上级：binding/web.Link()；函数对象由 resolveJSFunc() 从 globalThis 查询。
 func (x *GDExtensionInterface) resolveAPIFunctions() {
 	x.SpxAudioStopAll = resolveJSFunc("gdspx_audio_stop_all")
 	x.SpxAudioCreateAudio = resolveJSFunc("gdspx_audio_create_audio")

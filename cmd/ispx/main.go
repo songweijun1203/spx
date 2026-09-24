@@ -37,6 +37,9 @@ func init() {
 	})
 }
 
+// main 是 ispx.wasm 的 Go 程序入口，只初始化并常驻 XGo 解释器宿主。
+// 最近调用方：go.wasm.exec.js 的 Go.run()；最顶层入口：普通模式 GameApp.runLogicWasm()，
+// 或 Worker 模式 GoWasmBridge.loadGoModule()。具体游戏要等 JavaScript 调用 ispx_start()。
 func main() {
 	ixgoCtx := ixgo.NewContext(ixgo.SupportMultipleInterp | ixgo.EnableCachedReg)
 	if err := ispxai.RegisterPatch(ixgoCtx); err != nil {

@@ -118,13 +118,21 @@ func (p *penComponent) penDown() {
 }
 
 func (p *penComponent) stamp() {
-	if p.sprite.isDestroyed() || p.sprite.runtimeState.SyncSprite == nil {
-		return
-	}
 	engine.RequestRedraw()
+	p.checkOrCreatePen()
+	x, y := p.sprite.getXY()
+	applyRenderOffset(p.sprite, &x, &y)
+	rotationRadians, scale := p.getPenStampTransform()
+	obj := *p.penObj
+	texturePath := p.sprite.getCostumeAssetPath()
 	p.sprite.g.penCommandBarrier(func() {
-		p.sprite.ensureProxyQueryStateSynced()
-		engine.Managers().PenMgr.PenStampSprite(p.sprite.runtimeState.SyncSprite.Id)
+		engine.Managers().PenMgr.PenStampWithTransform(
+			obj,
+			texturePath,
+			mathf.NewVec2(x, y),
+			rotationRadians,
+			scale,
+		)
 	})
 }
 
@@ -301,6 +309,12 @@ func (p *penComponent) syncPenPosition(x, y float64) {
 		return
 	}
 	p.sprite.g.queuePenMove(*p.penObj, mathf.NewVec2(x, y))
+}
+
+func (p *penComponent) getPenStampTransform() (rotationRadians float64, scale mathf.Vec2) {
+	rotation, scaleX, scaleY := getRenderRotationAndScale(p.sprite)
+	renderScale := p.sprite.getCostumeRenderScale()
+	return gdx.DegToRad(rotation), mathf.NewVec2(scaleX*renderScale, scaleY*renderScale)
 }
 
 // ============================================================================

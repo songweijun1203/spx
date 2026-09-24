@@ -57,10 +57,11 @@ const (
 )
 
 type gameBinding struct {
-	callbacks            IGame
-	owner                any
-	phase                atomic.Uint32
-	startDone            chan struct{}
+	callbacks IGame
+	owner     any
+	phase     atomic.Uint32
+	startDone chan struct{}
+	// link 持有本次游戏与 Godot/平台后端的绑定会话；退出或重置时必须由同一对象清理。
 	link                 *gde.LinkSession
 	resetReleaseDeferred atomic.Bool
 	destroyReady         atomic.Bool
@@ -94,7 +95,10 @@ func Unlock() {
 	logicMu.Unlock()
 }
 
-// Main holds the single runtime from initialization through backend teardown.
+// Main 持有一局游戏从初始化、绑定到后端清理的完整生命周期。
+// 最近调用方：spx.XGot_Game_Main()，它是编译/解释后的 XGo 项目入口。
+// Web 最顶层入口：GameApp.StartGame() -> ispx_start() -> ispx.Run() -> 游戏 main.go。
+// Native 最顶层入口：Godot 加载 GDExtension 后调用最终程序 main.main。
 func Main(game IGame, owner any, initialize func()) error {
 	binding, err := bindGameAtPhase(game, owner, gameStarting)
 	if err != nil {
@@ -135,6 +139,9 @@ func Main(game IGame, owner any, initialize func()) error {
 	return nil
 }
 
+// 接收 gdengine 转发的 OnEngineStart，并继续调用具体 Game.OnEngineStart()。
+// 最近调用方：gdengine.onEngineStart() 保存于 PrepareLink 的 coreCallbacks。
+// Web 最顶层来源：普通模式 LinkSession.Run() 补发事件，或 Godot -> JS -> Go 的真实启动回调。
 func onStart() {
 	defer CheckPanic()
 	binding := runningBinding()
@@ -148,52 +155,80 @@ func onStart() {
 	binding.callbacks.OnEngineStart()
 }
 
+// onUpdate 是 Go 侧一帧游戏流程的总调度入口。
+//
+// 最近调用方：internal/gdengine.onEngineUpdate() 的 coreCallbacks.OnEngineUpdate；
+// 最顶层来源：Godot 每帧 -> Native/Web FFI -> gdengine.onEngineUpdate()。
+//
+// 一帧的处理顺序是：缓存输入和碰撞事件 -> 游戏更新 -> 协程恢复 ->
+// 渲染前同步 -> 截图提交 -> 帧结束处理。Game.OnEngineRender 虽然是
+// “渲染阶段”回调，但它仍然由本函数在 GameUpdate 和帧结束之间调用，
+// 并不是另一条独立的 Godot 引擎入口。
 func onUpdate(delta float64) {
+	// 统一把本帧回调中的 panic 转为引擎运行时错误处理。
 	defer CheckPanic()
+	// 所有更新阶段共享这把锁，避免同一局游戏被重入执行两次。
 	updateMu.Lock()
 	defer updateMu.Unlock()
+	// 标记当前正在处理帧更新；销毁、重置等路径据此等待或拒绝并发操作。
 	updateBusy.Store(true)
 	defer updateBusy.Store(false)
+	// 获取当前仍处于 gameRunning 状态的游戏绑定；游戏已销毁时直接丢弃帧事件。
 	binding := runningBinding()
 	if binding == nil {
 		return
 	}
+	// profiler 以一帧为样本，记录本帧总耗时和下面几个阶段的耗时。
 	profiler.BeginSample()
 	defer profiler.EndSample()
+	// 把跨线程/跨回调到达的待处理碰撞、键盘和鼠标事件转移到本帧的 ready 队列。
 	cacheTriggerEvents()
 	cacheKeyEvents()
 	cacheMouseEvents()
+	// 在游戏时间推进前采样输入条件，并准备输入回放当前 tick。
 	binding.callbacks.OnEngineBeforeUpdate(delta)
+	// 输入回调可能触发 reset/destroy；绑定失效时不要继续推进旧游戏。
 	if !binding.isCurrent(gameRunning) {
 		return
 	}
+	// 推进 SPX 逻辑时间；Calcfps 同时计算用于调试和时间缩放的近似 FPS。
 	itime.Update(delta, profiler.Calcfps())
+	// 游戏层更新：输入/声音、帧脚本、精灵代理同步和物理位置同步。
 	profiler.MeasureFunctionTime("GameUpdate", func() {
 		binding.callbacks.OnEngineUpdate(delta)
 	})
+	// GameUpdate 中可能主动停止或重载游戏，因此每个阶段后都重新确认绑定状态。
 	if !binding.isCurrent(gameRunning) {
 		return
 	}
+	// 恢复本帧到期的 Go 协程，包括 Wait、WaitNextFrame、事件和精灵 Main。
 	profiler.MeasureFunctionTime("CoroUpdateJobs", gco.Update)
+	// 协程恢复期间也可能触发游戏切换，旧绑定不能继续进入渲染阶段。
 	if !binding.isCurrent(gameRunning) {
 		return
 	}
+	// 渲染准备阶段：提交协程产生的视觉变化，处理触发结果并刷新画笔同步缓存。
 	profiler.MeasureFunctionTime("GameRender", func() {
 		binding.callbacks.OnEngineRender(delta)
 	})
+	// 渲染同步可能触发销毁或重置；失效时跳过截图和帧结束回调。
 	if !binding.isCurrent(gameRunning) {
 		return
 	}
+	// 分发本帧排队的截图/捕获请求；必须在渲染准备完成后执行。
 	if err := FlushCaptures(); err != nil {
 		Panic(err)
 		return
 	}
+	// 截图处理也可能改变生命周期，提交帧结束通知前再次确认当前绑定。
 	if !binding.isCurrent(gameRunning) {
 		return
 	}
+	// 通知输入回放等帧末逻辑，本帧正式结束。
 	binding.callbacks.OnEngineFrameEnd()
 }
 
+// 最近调用方：gdengine.onEngineDestroy()；最顶层来源：Godot/SpxEngine 销毁流程。
 func onDestroy() {
 	defer CheckPanic()
 	binding := activeGame.Load()
@@ -231,6 +266,7 @@ func onPause(paused bool) {
 	binding.callbacks.OnEnginePause(paused)
 }
 
+// 最近调用方：gdengine.onEngineReset()；最顶层入口：Web 停止本局游戏触发 C++ runtime reset。
 func onReset() {
 	defer CheckPanic()
 	binding := activeGame.Load()
