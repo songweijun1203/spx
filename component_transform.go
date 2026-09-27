@@ -113,7 +113,10 @@ func (t *transformComponent) onDestroy() {
 // Transform State
 // ============================================================================
 
-// markDirty marks the transform as dirty, triggering an update.
+// markDirty 标记变换需要同步到 Godot 代理。
+// markProxyDirty -> markVisualDirty 会在精灵可见时调用 engine.RequestRedraw；因此
+// Forever 中的移动、旋转或缩放会阻止本帧继续开启额外脚本轮次，先进入渲染阶段，
+// 剩余循环从下一引擎帧继续。
 func (t *transformComponent) markDirty() {
 	t.isDirty = true
 	t.sprite.markProxyDirty()

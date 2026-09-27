@@ -89,6 +89,10 @@ func bindCallbacks() CallbackInfo {
 
 // onEngineStart 先启动所有 Manager，再把启动事件交给 internal/engine。
 func onEngineStart() {
+	// 这里遍历的是 Go 侧 Manager 代理。当前具体代理都继承 baseMgr 的空 OnStart；
+	// 真正创建 sprite_root、UI CanvasLayer、画笔 SubViewport 等节点的是 C++
+	// SpxEngine::on_awake() 中更早执行的 C++ Manager.on_awake/on_start。
+	// 保留该钩子是为了让 Web、pure_engine 或以后覆写生命周期的代理拥有统一入口。
 	for _, mgr := range mgrs {
 		mgr.OnStart()
 	}
@@ -101,7 +105,8 @@ func onEngineStart() {
 func onEngineUpdate(delta float64) {
 	// 输入回放期间统一使用 SPX 固定逻辑步长，使脚本、计时器、Tween 和引擎更新保持一致。
 	delta = itime.EffectiveLogicalDeltaTime(delta)
-	//1 mgr更新
+	// 1. 更新 Go 侧 Manager 代理。当前 Native/Web 代理使用 baseMgr 空实现；真正的
+	// C++ Manager 更新已由 SpxEngine::on_update() 在回调 Go 之前完成。
 	for _, mgr := range mgrs {
 		mgr.OnUpdate(delta)
 	}
@@ -111,12 +116,13 @@ func onEngineUpdate(delta float64) {
 		sprites = append(sprites, sprite)
 	}
 
-	//2 精灵更新(此处是go侧的godot代理精灵，不是游戏业务精灵)
+	// 2. 更新 Go 侧 Godot 精灵代理，不是根包的业务 SpriteImpl。当前默认代理的
+	// OnUpdate 为空，此入口主要为场景预制精灵或未来扩展保留统一生命周期钩子。
 	for _, sprite := range sprites {
 		sprite.OnUpdate(delta) //代码中目前是空实现，此处的跟新应该怎么理解呢ß
 	}
 
-	//3 进入游戏帧流程
+	// 3. 进入根包 Game 的一帧流程：事件采样、协程调度、视觉同步和物理回读。
 	if coreCallbacks.OnEngineUpdate != nil {
 		coreCallbacks.OnEngineUpdate(delta)
 	}

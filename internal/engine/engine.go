@@ -100,6 +100,8 @@ func Unlock() {
 // Web 最顶层入口：GameApp.StartGame() -> ispx_start() -> ispx.Run() -> 游戏 main.go。
 // Native 最顶层入口：Godot 加载 GDExtension 后调用最终程序 main.main。
 func Main(game IGame, owner any, initialize func()) error {
+	// 先发布 starting 状态的 gameBinding。它是本局的生命周期所有者，也让后续
+	// engine.Go 能捕获并校验“任务属于哪一局”，防止 reset 后的旧任务继续运行。
 	binding, err := bindGameAtPhase(game, owner, gameStarting)
 	if err != nil {
 		return err
@@ -114,8 +116,12 @@ func Main(game IGame, owner any, initialize func()) error {
 	}()
 
 	if initialize != nil {
+		// 根包在这里建立纯 Go 运行状态。此时 Manager 全局接口尚未绑定，initialize
+		// 不得创建 Godot 节点或读取依赖 ResMgr 的引擎资源。
+		// g.initGame(sprites)
 		initialize()
 	}
+	// enginewrap 从此知道如何把必须在 Godot 主线程执行的 Manager 调用排队并等待结果。
 	enginewrap.Init(WaitMainThread)
 	callbacks := gdx.CoreCallbackInfo{
 		OnEngineStart:     onStart,
@@ -130,10 +136,14 @@ func Main(game IGame, owner any, initialize func()) error {
 		OnKeyReleased:     onKeyReleased,
 	}
 	if !activateGame(binding, func() {
+		// PrepareLink 按平台连接 FFI，安装 Godot -> Go 回调表，创建 Go Manager 代理，
+		// 并把代理赋给 gdx.AudioMgr/SpriteMgr/... 这些全局接口。
 		binding.link = gde.PrepareLink(callbacks)
 	}) {
 		return nil
 	}
+	// Native 会话立即就绪，真正的 OnEngineStart 稍后由 Godot 主循环发出；Web
+	// 解释器模式没有对应 C++ 回调，会在 Run 内主动补发一次启动事件。
 	binding.link.Run(finishStart)
 	committed = true
 	return nil

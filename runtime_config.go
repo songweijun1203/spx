@@ -24,6 +24,8 @@ import (
 	"github.com/goplus/spx/v3/internal/engine"
 )
 
+// applyRuntimeConfig 保存本局运行参数，再与项目配置合并。调用时项目 JSON 已解析，
+// 但窗口、物理 Manager 和舞台节点尚未按这些值配置。
 func (p *Game) applyRuntimeConfig(conf *Config, proj *coreproject.ProjectConfig) {
 	if conf != nil {
 		p.runtimeConfigInput = *conf
@@ -33,6 +35,8 @@ func (p *Game) applyRuntimeConfig(conf *Config, proj *coreproject.ProjectConfig)
 	p.applyStoredRuntimeConfig(proj)
 }
 
+// applyStoredRuntimeConfig 把合并结果写入 Game 的运行状态；reload 会复用先前保存的
+// runtimeConfigInput，因此命令行/宿主覆盖不会在热重载时丢失。
 func (p *Game) applyStoredRuntimeConfig(proj *coreproject.ProjectConfig) {
 	runtimeCfg := resolveGameRuntimeConfig(p.runtimeConfigInput, proj)
 	p.runtimeConfigInput.Title = runtimeCfg.Title

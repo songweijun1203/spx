@@ -415,7 +415,7 @@ func (p *Game) fireEvent(ev event) {
 	}
 }
 
-// Event Dispatch
+// Event Dispatch doWhenStart在第一层协程中运行
 func (p *scriptEventRegistry) doWhenStart(sinks []eventSink, shouldRun func() bool) {
 	p.dispatchStartSinks(sinksInScratchTargetOrder(p.game, sinks), scriptEventDispatch{
 		mode: coroutine.BatchWaitFirstSlice,

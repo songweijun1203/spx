@@ -217,7 +217,9 @@ type LoopTasks struct {
 	Logic func(coroutine.Thread)
 }
 
-// InitLoops registers enabled loops in event, input, then logic order.
+// InitLoops 按“高层事件 -> 输入采样 -> 逻辑维护”的固定顺序创建三个长期 Thread。
+// create 通常是 gco.Create；这里只登记 Thread，不保证其主体已经执行。它们首次获得
+// runMu 后通常很快在通道等待或 WaitNextFrame 处挂起，之后由调度器逐帧恢复。
 func InitLoops(create func(coroutine.ThreadObj, func(coroutine.Thread)) coroutine.Thread, tasks LoopTasks) {
 	if tasks.Event != nil {
 		create("eventLoop", tasks.Event)

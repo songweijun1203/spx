@@ -23,6 +23,9 @@ import (
 	itime "github.com/goplus/spx/v3/internal/time"
 )
 
+// runWithoutScreenRefreshBudget 是“不刷新屏幕运行”模式的单协程连续执行预算。
+// 它与 coroutine.loopWorkBudget 不同：后者控制一次 gco.Update 中允许多少同帧脚本
+// 轮次；本预算允许 warp 协程在循环边界不释放 runMu，超时后才强制跨到下一帧。
 const runWithoutScreenRefreshBudget = 500 * stdtime.Millisecond
 
 func IsAbortThreadError(err any) bool {
@@ -99,10 +102,23 @@ func ShouldWaitNextFrame() bool {
 	return true
 }
 
-// NewControlFlowWaiter caches the calling thread for generated loop yields.
+// NewControlFlowWaiter 为 Forever/Repeat/WaitUntil 等生成代码建立“每轮末尾”的等待器。
+//
+// 普通受管协程：
+//   - YieldLoopFor 创建 waitTypeLoop 并释放 runMu；
+//   - gco.Update 等本轮所有 runnable 脚本让出后，检查本帧重绘标记和工作预算；
+//   - 没请求重绘且预算尚有剩余时，在同一引擎帧开启下一 script round；
+//   - 否则把循环续体保留到下一次引擎 Update。
+//
+// RunWithoutScreenRefresh 协程：预算内不 Yield，持续执行下一轮；独立的 500ms 预算
+// 耗尽后使用 WaitNextFrameFor 强制让出。这条路径用于 Scratch 的 warp 语义。
+//
+// 创建 waiter 时缓存当前 Thread，避免循环的每一轮重复查找 goroutine 身份。
+// 创建控制流等待器
 func NewControlFlowWaiter() func() {
 	co := gco
 	if co == nil || !co.IsInCoroutine() {
+		// 非受管调用没有 waitTypeLoop 可登记，只能沿用传统的跨帧等待策略。
 		return func() {
 			if ShouldWaitNextFrame() {
 				WaitNextFrame()
@@ -113,14 +129,21 @@ func NewControlFlowWaiter() func() {
 	thread := co.Current()
 	return func() {
 		if !thread.RunWithoutScreenRefresh() {
+			// 这里只提交“希望继续循环”，并不直接决定同帧恢复还是跨帧恢复。
 			co.YieldLoopFor(thread)
 		} else if thread.ShouldWaitNextFrame(runWithoutScreenRefreshBudget) {
+			// warp 模式预算耗尽后明确使用 waitTypeFrame，至少跨过一个逻辑帧。
 			co.WaitNextFrameFor(thread)
+		} else {
+			// warp 模式预算尚有剩余，继续同帧循环。不会释放 runMu，也不会让出脚本执行权。
 		}
 	}
 }
 
-// RequestRedraw marks a visual change for cooperative script scheduling.
+// RequestRedraw 把“当前逻辑帧已有可见变化”传给协程调度器。
+// 它不立即调用 Godot 绘制，也不立刻打断当前脚本；当前 script round 会正常收尾。
+// 当 gco.Update 准备开启额外轮次时看到该标记，便停止同帧加速，让所有 roundJobs
+// 留到下一引擎帧，从而尽快进入 OnEngineRender 并提交视觉变化。
 func RequestRedraw() {
 	if gco != nil {
 		gco.RequestRedraw()

@@ -388,11 +388,13 @@ func (p *SpriteImpl) ensureProxyInitialized() {
 		return
 	}
 	p.runtimeState.SyncSprite = engine.BridgeNewBareSprite(p, mathf.NewVec2(p.getXY()))
-	p.applyPhysicsProxyConfig()
+	p.applyPhysicsProxyConfig() //同步物理组件配置
 	p.runtimeState.SyncSprite.SetVisible(p.effectiveProxyVisibility())
 	p.runtimeState.SyncSprite.Name = p.name
 	p.runtimeState.SyncSprite.SetTypeName(p.name)
 	p.applyGraphicEffects(true)
+
+	//动画回调注册
 	p.animation().registerOnAnimationLooped(p.handleAnimationLooped)
 	p.animation().registerOnAnimationFinished(p.handleAnimationFinished)
 	p.markProxyDirty()

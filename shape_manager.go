@@ -26,22 +26,19 @@ import (
 	"github.com/goplus/spx/v3/internal/ui"
 )
 
-// Scratch renders the shared pen canvas above the backdrop and below every
-// managed sprite. Keep the pen layer explicit so sprite ordering cannot reuse it.
+// 画笔使用独立的第 0 层：位于背景之上、所有受管精灵之下。
+// 业务精灵从 firstSpriteLayer 开始，避免 Z 序重建时占用共享画布层。
 const (
 	penLayer         = 0
 	firstSpriteLayer = penLayer + 1
 )
 
-// Scratch shares one limit across all sprites, including hidden clones.
+// 所有精灵共享同一个克隆上限，包括尚未公开显示的克隆。
 const maxClones = 300
 
-// shapeManager manages the lifecycle of all runtime shapes.
-// It is responsible for:
-//   - activation (delayed add)
-//   - destruction (delayed remove)
-//   - render layer grouping
-//   - minimizing per-frame allocations
+// shapeManager 管理一局游戏中所有 Shape 的业务生命周期。
+// items 是当前活动对象的权威顺序；destroyItems 保存等待帧末同步删除的对象；
+// tempItems 供逐帧扫描复用。它还负责克隆计数、渲染层重排和气泡布局缓存。
 type shapeManager struct {
 	cloneCount               int
 	pendingClones            int
@@ -55,7 +52,7 @@ type shapeManager struct {
 	pendingClonePublications atomic.Bool
 }
 
-// init prepares internal buffers while preserving existing allocations when possible.
+// init 为新一局清空状态，并尽量复用上一局已经分配的切片容量。
 func (s *shapeManager) init() {
 	s.cloneCount = 0
 	s.pendingClones = 0
@@ -101,14 +98,13 @@ func (s *shapeManager) takeCloneProxyPublications() bool {
 	return s.pendingClonePublications.Swap(false)
 }
 
-// reset clears all internal state while keeping allocated memory.
-// It is safe to call between scenes or rounds.
+// reset 先清除所有 Godot 精灵代理，再清空 Go 侧 Shape 状态；用于场景/局次切换。
 func (s *shapeManager) reset() {
 	engine.ClearAllSprites()
 	s.init()
 }
 
-// flushActivate advances active non-sprite, non-bubble shapes for the current frame.
+// flushActivate 推进当前帧中需要独立更新的非精灵、非气泡 Shape。
 func (s *shapeManager) flushActivate(items []Shape) {
 	if len(items) == 0 {
 		return
@@ -195,7 +191,7 @@ func (s *shapeManager) collectProxyUpdates(items []Shape, buffer *engine.SpriteS
 	}
 }
 
-// flushDestroy performs cleanup for shapes that have been scheduled for destruction.
+// flushDestroy 把延迟销毁的精灵 ID 写入同步缓冲并断开 Go 代理引用。
 func (s *shapeManager) flushDestroy(buffer *engine.SpriteSyncBuffer) {
 	if len(s.destroyItems) == 0 {
 		return
@@ -211,7 +207,7 @@ func (s *shapeManager) flushDestroy(buffer *engine.SpriteSyncBuffer) {
 	s.destroyItems = s.destroyItems[:0]
 }
 
-// add adds a shape immediately to the active list.
+// add 立即把 Shape 加入活动列表；克隆和文字气泡还会维护各自的附加状态。
 func (s *shapeManager) add(shape Shape) {
 	if sprite, ok := shape.(*SpriteImpl); ok && sprite.IsCloned() {
 		s.cloneCount++
@@ -226,12 +222,12 @@ func (s *shapeManager) add(shape Shape) {
 	s.items = append(s.items, shape)
 }
 
-// remove schedules a shape for destruction at the end of the frame.
+// remove 只登记延迟销毁；真正通知 Godot 删除发生在帧同步的 flushDestroy。
 func (s *shapeManager) remove(shape Shape) {
 	s.destroyItems = append(s.destroyItems, shape)
 }
 
-// addShape delegates to add; kept for call-site consistency.
+// addShape 是 Game 添加普通 Shape 时使用的统一入口。
 func (s *shapeManager) addShape(child Shape) {
 	s.add(child)
 }

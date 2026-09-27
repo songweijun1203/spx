@@ -49,6 +49,9 @@ func newProjectFontPayload(plan coreproject.RuntimeFontPlan) projectFontPayload 
 	return payload
 }
 
+// applyRuntimeFontPlan 将结构化字体计划摊平成 ABI 数组并一次性交给 Godot ResMgr。
+// ResMgr 以事务方式加载字体并替换 Theme 默认/回退字体；返回非空字符串表示事务失败，
+// loadGame 会终止启动，避免 UI 在字体只应用了一部分的状态下继续创建。
 func applyRuntimeFontPlan(res projectFontBridge, plan coreproject.RuntimeFontPlan) error {
 	if res == nil {
 		return errors.New("project font bridge is nil")

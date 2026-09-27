@@ -113,6 +113,9 @@ func (p *packedConfigDir) projectFontFamilyNames() ([]string, bool) {
 	return names, true
 }
 
+// wrapPackedConfigDir 检测 index_pack.json，并在存在时返回配置视图包装器。
+// 包装器优先返回包内嵌的 project/sprites/sounds/fonts JSON；未打包的普通文件和
+// 二进制资源继续委托给底层 fs，因此上层加载流程不需要区分两种项目格式。
 func wrapPackedConfigDir(fs spxfs.Dir) (spxfs.Dir, bool, error) {
 	index, ok, err := loadPackedConfigIndex(fs)
 	if err != nil || !ok {

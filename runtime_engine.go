@@ -37,12 +37,14 @@ func (p *Game) OnEngineStart() {
 	// 一次性保护：Godot 可能重复发送启动通知，但一局游戏只能初始化一次。
 	p.lifecycleState.RunOnce.Do(func() {
 		// 每局重新建立边界缓存，避免沿用上一局的碰撞/感知结果。
-		cachedBounds = make(map[string]mathf.Rect2) //全局变量
+		// cachedBounds 是包级的服装/碰撞边界缓存；新一局不能沿用上一局的资源结果。
+		cachedBounds = make(map[string]mathf.Rect2)
 		// 保存本次 bootstrap 的代际编号。发生 reset 时编号会递增，旧任务
 		// 可据此识别自己已经过期，避免旧一局继续修改新一局状态。
 		generation := p.bootstrapGeneration()
-		// 将启动工作交给 Go 引擎调度器；这里通常只负责排队，不在当前
-		// Godot 回调栈中直接执行完整的项目加载。
+		// 将启动工作交给 Go 引擎调度器；这里通常只负责创建加载 Thread，不在当前
+		// Godot 回调栈中直接执行完整加载。Thread 创建后即可竞争 runMu；其中的
+		// WaitMainThread 会由当前或后续引擎 Update 泵送，加载不等同于“固定延后一帧”。
 		engine.Go(p, func(context.Context) {
 			// reset/reload 期间如果代际已经变化，丢弃这次过期启动任务。
 			if !p.isCurrentBootstrap(generation) {
@@ -63,7 +65,8 @@ func (p *Game) OnEngineStart() {
 					return
 				}
 			}
-			// 只有当前代际仍然有效，才把游戏标记为可接受正常帧更新。
+			// 只有当前代际仍有效才标记“资源与对象构建完成”。从此 OnEngineUpdate 可运行，
+			// 但 BootstrapDone 仍为 false，OnStart 和普通帧回调尚未开放。
 			if !p.markGameStarted(generation) {
 				return
 			}
@@ -133,15 +136,14 @@ func (p *Game) OnEngineUpdate(float64) {
 		return
 	}
 	// 使用 BeforeUpdate 已经选出的条件 sink，不在这里重新求值。
-	// 此处直接启动协程，如果StartDispatched 没有完成，内部没有处理器，相当于什么也没做
+	// 条件快照在 StartDispatched 前不会产生，因此启动阶段这里不会误派发条件处理器。
 	p.scriptEvents.dispatchConditions()
 	if session != nil {
 		// 此时逻辑时钟已经推进，才执行截图热键并启动本帧输入事件处理协程。
 		p.inputMgr.dispatchInputSessionTick(session)
 	}
 	p.soundMgr.Update()
-	// bootstrap 完成后派发一次 OnStart；之后执行普通逐帧回调。
-	// runFrameScripts 这个函数名如何理解，感觉不是很匹配啊？
+	// bootstrap 完成后的第一个脚本帧只派发一次 OnStart；再后面的帧才运行常规帧回调。
 	p.runFrameScripts()
 	// 将 Go 侧本帧产生的精灵代理、相机、激活和销毁变化批量推送到 Godot。
 	p.updateSpriteProxies()
@@ -199,7 +201,8 @@ func runMainUntilYield(owner coroutine.ThreadObj, mainFn func()) {
 }
 
 func runSpriteMainsUntilYield(inits []Sprite) {
-	// Preserve load/Z-order while letting each Main run until its first yield.
+	// 严格保持项目加载/Z 序：前一个精灵 Main 至少完成首段（首次挂起或结束）后，
+	// 才创建下一个精灵 Main Thread。它们挂起后的剩余部分再由逐帧调度器恢复。
 	for _, ini := range inits {
 		spr := spriteOf(ini)
 		if spr == nil {
@@ -253,7 +256,7 @@ func (p *Game) runBootstrapTasks(generation uint64) {
 		if len(tasks) == 0 {
 			return
 		}
-		// Also drain tasks queued by earlier tasks.
+		// 当前批次中的任务可能继续登记 bootstrap 工作；本批执行完后外层循环会继续取。
 		for _, task := range tasks {
 			if !p.isCurrentBootstrap(generation) {
 				return
@@ -351,6 +354,9 @@ func (p *Game) claimBootstrap(generation uint64) bool {
 // startBootstrap 启动 bootstrap 队列的唯一执行任务。
 // currentGame 和 claimBootstrap 共同保证当前 Game 且只启动一次。
 func (p *Game) startBootstrap(generation uint64) {
+	// 另建 Thread 而不是在加载 Thread 中直接执行：加载任务可以先彻底退出并释放其
+	// 生命周期栈；bootstrap 则拥有独立 owner/取消边界。创建后不等待，调度器会在
+	// runMu 可用时立即运行它，并不要求一定进入下一帧 gco.Update。
 	engine.Go(p, func(context.Context) {
 		if currentGame() != p || !p.claimBootstrap(generation) {
 			return

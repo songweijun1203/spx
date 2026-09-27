@@ -72,7 +72,9 @@ func (p *Coroutines) readGCStatsBeforeUpdate() *sdebug.GCStats {
 	return stats
 }
 
-// beginUpdate 固定本轮帧号、关卡时间和预算；循环过程中不会重新采样逻辑时间。
+// beginUpdate 固定本轮帧号、关卡时间和两个墙钟截止点；循环过程中不会重新采样
+// 逻辑时间。workDeadline 是 Forever 同帧多轮调度的正常预算，watchdogDeadline 是
+// 防止整个 Update 异常久占主线程的最后保护，两者用途不同。
 func (p *Coroutines) beginUpdate() (UpdateJobsStats, updateState) {
 	start := stime.Now()
 	state := updateState{
@@ -85,6 +87,10 @@ func (p *Coroutines) beginUpdate() (UpdateJobsStats, updateState) {
 }
 
 // runUpdateLoop 持续处理任务，必要时开启同帧额外脚本轮次，并在结束时归并延期任务。
+//
+// currentJobs 暂时为空且没有 runnable Thread 时，nextUpdateAction 返回 updateComplete。
+// 此时并不一定真的结束：queueNextScriptRound 会检查 roundJobs、重绘标记和工作预算。
+// 允许继续就把 roundJobs 放回 currentJobs；不允许继续才退出循环并留到下一帧。
 func (p *Coroutines) runUpdateLoop(stats *UpdateJobsStats, state *updateState) {
 	start := stime.Now()
 	iterations := 0
@@ -94,6 +100,7 @@ updateLoop:
 		iterations++
 		switch p.nextUpdateAction(stats) {
 		case updateComplete:
+			// 普通 Forever 的同帧加速决策只发生在完整 script round 的边界。
 			if p.queueNextScriptRound(state) {
 				continue
 			}
@@ -153,7 +160,9 @@ func (p *Coroutines) processWaitJob(state *updateState, stats *UpdateJobsStats, 
 
 	switch job.Type {
 	case waitTypeLoop, waitTypeNextRound:
-		// 旧帧遗留任务可直接恢复；本帧任务先进入 roundJobs，待所有 runnable 脚本让出后决定。
+		// 旧帧遗留任务已经至少跨过一帧，可以直接恢复。当前帧刚 Yield 出来的任务
+		// 不能在这里立刻恢复，否则一个 Forever 会独占队列；先集中到 roundJobs，
+		// 等本轮所有 runnable 脚本都让出后，再统一决定同帧续跑还是延期。
 		if job.Frame < state.frame {
 			p.runWaitJob(job)
 		} else {
@@ -193,7 +202,9 @@ func (p *Coroutines) runWaitJob(job *WaitJob) {
 	}
 }
 
-// promoteDeferredJobs 在 Update 结束时把 roundJobs 合入后续任务，并稳定恢复脚本顺序。
+// promoteDeferredJobs 在 Update 结束时把未获准同帧恢复的 roundJobs 合入后续任务。
+// 这正是 Forever 因“请求重绘”或“预算耗尽”而等待下一引擎帧的落点：任务并未丢失
+// 或停止，而是经稳定排序后移回 currentJobs，留给下一次 gco.Update 检查。
 //
 // 事件处理器重启可继承 resumeOrder，所以这里不能简单按新 Thread ID 排序。
 func (p *Coroutines) promoteDeferredJobs(stats *UpdateJobsStats) {

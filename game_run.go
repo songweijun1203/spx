@@ -57,9 +57,14 @@ func SetDebug(flags dbgFlags) {
 // Web 最顶层入口：GameApp.StartGame() -> ispx_start() -> ispx.Run()。
 // 它先把 Go 侧 Game/精灵类型信息交给 initGame()，再由 engine.Main() 建立引擎绑定。
 func XGot_Game_Main(game Gamer, sprites ...Sprite) {
+	// game 是生成代码中的 *Game；baseGame() 取出其中嵌入的 spx.Game，后者才是
+	// SPX 运行时真正保存状态的对象。sprites 只是各精灵的零值指针，用来登记 Go 类型。
 	g := game.baseGame()
 	err := engine.Main(game, g, func() {
+		// initialize 发生在 Godot FFI/Manager 绑定之前，只建立纯 Go 状态：事件注册表、
+		// shapeManager、同步缓冲区以及“精灵名 -> reflect.Type”映射。这里不会读取 assets。
 		g.initGame(sprites)
+		// 保存生成的项目对象，后续资源加载会反射它的字段，并从中取得 MainEntry/OnLoaded。
 		g.gamer = game
 	})
 	if err != nil {
@@ -138,6 +143,15 @@ func Sched() int {
 	return 0
 }
 
+// Forever 反复执行 call，并在每轮末尾经过一次协作式循环边界。
+//
+// 普通模式下 NewControlFlowWaiter 不会无条件等待下一帧，而是调用 YieldLoopFor：
+// 当前轮先释放脚本执行权，再由 gco.Update 在所有脚本都让出后统一决定是否继续同帧
+// 下一轮。若本帧已有可见修改请求重绘，或同帧工作预算已经耗尽，该协程才延期到
+// 下一引擎帧。这样纯计算 Forever 可以在预算内多跑几轮，视觉循环则及时交还渲染。
+//
+// RunWithoutScreenRefresh 模式是例外：循环边界在独立的 500ms 预算内不主动 Yield，
+// 预算耗尽后才 WaitNextFrame，具体策略集中在 engine.NewControlFlowWaiter 中。
 func Forever(call func()) {
 	coreruntime.Forever(call, engine.NewControlFlowWaiter())
 }

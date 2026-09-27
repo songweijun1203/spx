@@ -30,8 +30,12 @@ import (
 )
 
 type OpenedBuilderResources struct {
+	// AssetDir 是传入资源的逻辑根（启动时通常为 "assets"），用于建立引擎资源路径。
 	AssetDir string
-	FS       spxfs.Dir
+	// FS 是统一后的项目配置视图；可能是普通目录，也可能是 packedConfigDir 包装器。
+	// 所有权交给调用方，Game 会在运行期继续用它惰性加载声音等配置。
+	FS spxfs.Dir
+	// LoadedBuilderProject 同时包含运行参数、项目配置和已经校验的字体目录。
 	LoadedBuilderProject
 }
 
@@ -56,6 +60,8 @@ func AssetDirFromResource(resource any) (string, bool) {
 	}
 }
 
+// ResourceDir 把外部资源参数统一为 spxfs.Dir。已有 Dir 原样使用；字符串会根据
+// schema 交给 fs.Open，例如 asset/zip 等实现由对应包的 init 注册。
 func ResourceDir(resource any) (spxfs.Dir, error) {
 	if fs, ok := resource.(spxfs.Dir); ok {
 		return fs, nil
@@ -67,6 +73,11 @@ func ResourceDir(resource any) (spxfs.Dir, error) {
 	return spxfs.Open(path)
 }
 
+// OpenBuilderResources 是运行时项目资源的总入口。
+//
+// 顺序为：打开目录 -> 可选包装 index_pack.json -> 解析项目 index.json ->
+// 归一化资源路径 -> 扫描并校验项目字体。任何步骤失败都会关闭刚打开的 FS，
+// 成功时 FS 保持打开并由上层 Game 持有。
 func OpenBuilderResources(resource any, gameConf *Config) (OpenedBuilderResources, error) {
 	var opened OpenedBuilderResources
 	opened.AssetDir, _ = AssetDirFromResource(resource)
@@ -91,6 +102,9 @@ func OpenBuilderResources(resource any, gameConf *Config) (OpenedBuilderResource
 	return opened, nil
 }
 
+// LoadJSON 读取一份配置 JSON。Godot URI（如 res://）优先经 ResMgr 读取，以适配
+// 导出包/虚拟文件系统；普通目录则直接走 spxfs.Dir。packedConfigDir 也实现同一接口，
+// 因而调用方无需区分配置来自独立 index.json 还是 index_pack.json 内嵌片段。
 func LoadJSON(ret any, fs spxfs.Dir, file string) error {
 	if assetDir, ok := gdAssetDir(fs); ok && shouldReadConfigFromEngine(assetDir) {
 		filePath := joinAssetConfigPath(assetDir, normalizePackedConfigPath(file))
@@ -125,6 +139,8 @@ func LoadConfig(ret any, fs spxfs.Dir, index any) error {
 	}
 }
 
+// LoadSpriteConfig 读取 sprites/<name>/index.json，并把服装的相对路径转换为相对
+// 项目 assets 根的规范路径。它只解析元数据，不在此处加载图片像素或创建 Godot Resource。
 func LoadSpriteConfig(fs spxfs.Dir, name string) (LoadedSpriteConfig, error) {
 	baseDir := path.Join("sprites", name) + "/"
 	var conf SpriteConfig
@@ -138,6 +154,8 @@ func LoadSpriteConfig(fs spxfs.Dir, name string) (LoadedSpriteConfig, error) {
 	}, nil
 }
 
+// LoadSoundConfig 按需读取 sounds/<name>/index.json 并归一化媒体路径。
+// 音频文件本身直到 AudioMgr.PlayWithAttenuation 时才由 Godot 加载/播放。
 func LoadSoundConfig(fs spxfs.Dir, name string) (LoadedSoundConfig, error) {
 	baseDir := path.Join("sounds", name)
 	var conf SoundConfig

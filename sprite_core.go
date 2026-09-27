@@ -123,6 +123,9 @@ func (p *SpriteImpl) markProxyDirty() {
 	p.spriteState.IsDirty = true
 }
 
+// markVisualDirty 不直接刷新 Godot 节点，只发布本帧发生了可见变化。
+// 一方面后续视觉同步会提交脏代理；另一方面 RequestRedraw 会让协程调度器在当前
+// script round 收尾后停止 Forever 的同帧额外轮次，先把控制权交回渲染流程。
 func (p *SpriteImpl) markVisualDirty() {
 	p.requestRedrawIfVisible()
 	p.spriteState.VisualVersion++
@@ -133,19 +136,25 @@ func (p *SpriteImpl) markVisualDirty() {
 // -----------------------------------------------------------------------------
 func (p *SpriteImpl) init(
 	g *Game, name string, spriteCfg *coreproject.SpriteConfig, gamer reflect.Value, sprite Sprite) {
+	// 1. 将服装/图集配置转换为 Go costume，并把该精灵绑定到 Game 的事件注册表。
 	p.initBaseObjects(spriteCfg, g)
+	// 2. 保存业务身份、初始缩放/可见性；位置、方向等由组件初始化继续读取。
 	p.initBasicProperties(g, name, sprite, gamer, spriteCfg)
+	// 3. 创建 transform/animation/physics/pen/sound/bubble 等纯 Go 组件状态。
 	p.initComponents(spriteCfg)
-	p.initRuntimeProxy() //创建 Godot 代理节点
+	// 4. 同步切到 Godot 主线程，创建 SpxSprite 节点树并提交初始服装、物理和效果。
+	p.initRuntimeProxy()
 }
 
 func (p *SpriteImpl) initBaseObjects(spriteCfg *coreproject.SpriteConfig, g *Game) {
+	// 两类配置最终都展开为 []*costume：独立图片列表，或单/多图集中的帧列表。
 	if spriteCfg.Costumes != nil {
 		p.baseObj.init(spriteCfg.Costumes, spriteCfg.GetCostumeIndex())
 	} else {
 		p.baseObj.initWith(spriteCfg)
 	}
 	p.spriteState.DefaultCostumeIndex = p.baseObj.costumeIndex
+	// 此时只绑定 owner 和注册表。具体 OnStart/OnClick 等 handler 要等精灵 Main 执行时登记。
 	p.scriptEventBindings.bind(&g.scriptEvents, p)
 }
 

@@ -25,6 +25,9 @@ import (
 )
 
 func (p *Game) initEventLoop() {
+	// 这里只创建并登记三个调度器 Thread，不会在当前调用栈中把循环完整跑起来。
+	// eventLoop 会等待 Game.events；inputEventLoop/logicLoop 每轮末尾等待下一帧。
+	// 因而它们可以常驻整个游戏生命周期，又不会持续占用脚本执行权。
 	coreruntime.InitLoops(gco.Create, coreruntime.LoopTasks{
 		Event: p.eventLoop,
 		Input: p.inputEventLoop,

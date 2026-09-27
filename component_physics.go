@@ -300,7 +300,9 @@ func (p *physicsComponent) initCollisionParams() {
 	}
 }
 
-// applyPhysicsProxyConfig applies initial physics configuration to the engine sprite proxy.
+// applyPhysicsProxyConfig 在 SpxSprite 代理创建后提交初始物理配置：先根据项目设置
+// 计算碰撞/触发层与掩码，再同步形状、重力缩放和刚体模式。这里写的是 Godot 节点
+// 的初始状态；后续物理模拟产生的位置会在每帧由 pullPhysicsPositions 回读。
 func (p *physicsComponent) applyPhysicsProxyConfig(syncProxy *engine.Sprite) {
 	p.initCollisionParams()
 	p.collisionInfo.syncToProxy(syncProxy, false, p.sprite)

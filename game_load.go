@@ -45,12 +45,17 @@ func (p *Game) loadSprite(sprite Sprite, name string, gamer reflect.Value) error
 // loadSpriteConfig 把已经解析好的 SpriteConfig 写入 Go 精灵对象，
 // 并初始化 SpriteImpl、组件和 Godot 运行代理，最后登记到 p.sprs。
 func (p *Game) loadSpriteConfig(sprite Sprite, name string, gamer reflect.Value, cfg *coreproject.SpriteConfig) error {
+	// 生成精灵结构的第 0 个字段约定为嵌入的 SpriteImpl。先把整个对象清零，避免
+	// reload 时沿用旧组件、事件 owner 或 Godot 代理，再从同一个业务对象地址重建状态。
 	vSpr := reflect.ValueOf(sprite).Elem()
-	vSpr.Set(reflect.Zero(vSpr.Type()))
+	vSpr.Set(reflect.Zero(vSpr.Type())) //结构体清零
 	base := vSpr.Field(0).Addr().Interface().(*SpriteImpl)
-	// Paths in cfg are already normalized by coreproject.LoadSpriteConfig.
+	// cfg 中的资源路径已经由 coreproject.LoadSpriteConfig 归一化到项目 assets 根。
 	base.init(p, name, cfg, gamer, sprite)
+	// sprs 是“精灵类型名 -> 项目原型/主实例”的缓存。舞台 Z 序再次引用该名称时
+	// 会复用这里的对象；特殊的 sprites 数组则以它为模板复制出多个独立实例。
 	p.sprs[name] = sprite
+	// 生成精灵的第 1 个字段约定为 *Game；回填后精灵脚本可直接访问舞台 API/字段。
 	return bindSpriteOwner(vSpr, gamer)
 }
 
@@ -65,10 +70,11 @@ func (p *Game) loadStage(
 ) {
 	p.setupDisplayConfig(proj)
 	p.setupWorldAndWindow(proj)
-	p.setupPlatformAndCamera(proj)
+	p.setupPlatformAndCamera(proj) //内部会创建背景节点
 	p.setupAudioAndTilemap(proj)
 
 	inits := p.loadAndInitSprites(g, proj, loadSprite)
+	// 这里不直接执行精灵 awake/Main，而是登记到 bootstrap 队列，保证舞台和基础系统准备好后再运行。
 	p.runSpriteCallbacks(inits, proj, g, generation)
 }
 
@@ -76,6 +82,7 @@ func (p *Game) loadStage(
 // Display Setup
 // -----------------------------------------------------------------------------
 func (p *Game) setupDisplayConfig(proj *coreproject.ProjectConfig) {
+	// ResolveDisplaySettings 负责默认值；这里保存 Go 镜像并立即把 debug 模式写给 Godot。
 	display := coreproject.ResolveDisplaySettings(proj)
 	p.displayState.WindowScale = display.WindowScale
 	p.displayState.StretchMode = display.StretchMode
@@ -99,6 +106,7 @@ func (p *Game) applyWorldWindowMetrics(metrics coreproject.WorldWindowMetrics) {
 }
 
 func (p *Game) setupWorldAndWindow(proj *coreproject.ProjectConfig) {
+	// TileMap 存在时地图尺寸优先；没有 TileMap 时回退项目 Map 或 480x360 基准尺寸。
 	proj.Map = coreproject.ResolveMapConfig(proj.Map, p.tilemapMgr.hasData(), baseScreenWidth, baseScreenHeight)
 	backdrops := proj.GetBackdrops()
 	if p.tilemapMgr.hasData() {
@@ -109,6 +117,7 @@ func (p *Game) setupWorldAndWindow(proj *coreproject.ProjectConfig) {
 	p.displayState.WorldHeight = proj.Map.Height
 
 	if len(backdrops) > 0 {
+		// 背景配置会形成 Game.baseObj 的服装列表；doWorldSize 会结合当前背景尺寸修正世界。
 		p.baseObj.initBackdrops(backdrops, proj.GetBackdropIndex())
 		p.doWorldSize()
 	} else {
@@ -131,6 +140,7 @@ func (p *Game) setupWorldAndWindow(proj *coreproject.ProjectConfig) {
 func (p *Game) setupPlatformAndCamera(proj *coreproject.ProjectConfig) {
 	platformMgr := engine.Managers().PlatformMgr
 
+	// 平台布局把项目窗口、全屏、移动端和当前宿主窗口状态合并成最终尺寸。
 	layout := coreproject.ResolvePlatformLayout(coreproject.PlatformLayoutInput{
 		WindowWidth:       p.displayState.WindowWidth,
 		WindowHeight:      p.displayState.WindowHeight,
@@ -150,6 +160,7 @@ func (p *Game) setupPlatformAndCamera(proj *coreproject.ProjectConfig) {
 
 	p.camera = &cameraImpl{}
 	p.Camera = p.camera
+	// camera.init 经 CameraMgr 创建/取得 Godot Camera2D，并建立 Go 相机状态。
 	p.camera.init(p)
 
 	isWindowMapSizeEqual := coreproject.IsWindowWorldSizeEqual(
@@ -162,8 +173,10 @@ func (p *Game) setupPlatformAndCamera(proj *coreproject.ProjectConfig) {
 	ui.SetBaseScreenSize(baseScreenWidth, baseScreenHeight)
 	ui.ClampUIPositionInScreen(isWindowMapSizeEqual)
 
+	// Game 自身也使用一个 internal/engine.Sprite 代理表示舞台背景。Godot 侧该 SpxSprite
+	// 位于 sprite_root，z=-1、无物理；业务精灵从 firstSpriteLayer 开始排列。
 	p.runtimeState.SyncSprite = engine.NewBackdropProxy(p, p.getCostumePath(), p.getCostumeRenderScale())
-	p.setupBackdrop()
+	p.setupBackdrop() //会设置背景和缩放
 }
 
 func (p *Game) syncPenCanvasToWorld() {
@@ -192,12 +205,15 @@ func (p *Game) loadAndInitSprites(
 	loadSprite spriteLoader,
 ) []Sprite {
 	inits := make([]Sprite, 0, len(proj.Zorder))
+	// WalkZOrder 严格按 project.zorder 顺序展开普通名称和特殊 shape 条目。
+	// 普通名称复用 p.sprs 中已加载的主实例；特殊 sprites 条目会从原型复制新实例。
 	err := coreproject.WalkZOrder(
 		proj.Zorder,
 		func(layer int, name string) error {
 			sp := p.getSpriteProtoByName(name, g, loadSprite)
 			spr := spriteOf(sp)
 			spr.setLayer(layer + firstSpriteLayer)
+			// 加入 shapeMgr 后对象才参与查询、逐帧同步、输入命中和销毁管理。
 			p.addShape(spr)
 			inits = append(inits, sp)
 			return nil
@@ -214,7 +230,8 @@ func (p *Game) loadAndInitSprites(
 	if err != nil {
 		engine.Panic(err)
 	}
-	// Rebuild expanded z-order entries into contiguous sprite layers above the shared pen canvas.
+	// 特殊数组可能把一个 Z 序条目展开成多个精灵，因此最终按 shapeMgr 实际顺序
+	// 重新分配连续图层；精灵层位于共享画笔画布之上。
 	p.shapeMgr.updateRenderLayers()
 	return inits
 }
@@ -230,7 +247,7 @@ func (p *Game) runSpriteCallbacks(inits []Sprite, proj *coreproject.ProjectConfi
 	queueBootstrap := func(call func()) {
 		p.queueBootstrap(generation, call)
 	}
-	// Bootstrap hooks may override the initial camera target.
+	// bootstrap 中的脚本可以再次改相机目标；这里先应用项目配置给出的初始跟随对象。
 	if proj.Camera != nil && proj.Camera.On != "" {
 		p.Camera.Follow__1(proj.Camera.On)
 	}
@@ -252,9 +269,13 @@ func (p *Game) runSpriteCallbacks(inits []Sprite, proj *coreproject.ProjectConfi
 // Stage Items
 // -----------------------------------------------------------------------------
 func (p *Game) setupAudioAndTilemap(proj *coreproject.ProjectConfig) {
+	// TileMap/装饰物会创建 Godot 节点，并可能据实际瓦片范围修正世界尺寸；修正后
+	// applyStageGeometry 再更新 Camera2D 限制和 Pen SubViewport 尺寸。
 	p.applyTilemap()
+	// SoundObj 是舞台级音效参数/播放 owner。声音配置与媒体仍按第一次播放惰性加载。
 	p.audioState.SoundObj = p.soundMgr.AllocSound()
 	if proj.Bgm != "" {
+		// BGM 是启动加载阶段唯一主动触发的声音；Play 会按路径加载 Godot AudioStream。
 		p.Play__1(proj.Bgm, true)
 	}
 }
@@ -270,6 +291,9 @@ func (p *Game) addSpecialShape(
 	inits []Sprite,
 	loadSprite spriteLoader,
 ) ([]Sprite, error) {
+	// 特殊 shape 不是单一类型：monitor/measure 直接创建 UI/Shape；sprite 引用已有
+	// Gamer 字段；sprites 从一个精灵原型展开多个实例。只有返回到 inits 的精灵才会
+	// 进入后续 awake/Main/collision bootstrap。
 	return coreproject.AppendStageItems(inits, v, coreproject.StageItemHandlers[Sprite]{
 		StageMonitor: func(shape coreproject.StageShape) error {
 			sm, err := newMonitor(g, shape)
@@ -353,6 +377,7 @@ func (p *Game) addStageSprites(
 }
 
 func bindSpriteOwner(spriteValue reflect.Value, gamer reflect.Value) error {
+	// XGo 生成结构约定：字段 0 是 SpriteImpl，字段 1 是 *Game owner。
 	if spriteValue.NumField() < 2 {
 		return fmt.Errorf("sprite %s is missing owner field", spriteValue.Type())
 	}
