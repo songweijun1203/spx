@@ -41,23 +41,36 @@ class Node;
 class PathDebugDrawer;
 class CollisionShape2D;
 
+// SPX 的网格寻路核心。它封装 Godot AStarGrid2D，扫描场景碰撞体生成阻塞格，
+// 并在 ABI 边界完成 SPX/Godot 坐标与数组格式转换。
+// 直接调用方：SpxNavigationMgr，亦可由 Godot ClassDB 脚本接口直接调用；
+// 顶层调用方：Go NavigationMgr/精灵寻路 API，或 Godot 调试脚本。
+// Godot 规则：RefCounted 由 Ref<> 自动管理，不可手工 memdelete；但 drawer 是 Node，
+// 由场景树拥有并 queue_free。场景扫描、AStar 修改和 Node 操作均限定主线程。
 class SpxPathFinder : public RefCounted {
 	GDCLASS(SpxPathFinder, RefCounted);
 
 private:
+	// 引用计数拥有的 Godot A* 网格资源，构造时 instantiate，reset 仅清空内容。
 	Ref<AStarGrid2D> astar;
+	// 是否用网格角点补充多边形相交判断；当前默认只检查格子中心。
 	bool is_precise_check = false;
+	// 场景树拥有的可视化节点裸指针；退出树时回调 clear_drawer 解除引用。
 	PathDebugDrawer *drawer = nullptr;
 
+	// 世界/格子换算缓存；与 astar->cell_size 保持一致。
 	Vector2 cached_cell_size{ 16, 16 };
 
 protected:
+	// Godot ClassDB 注册回调，在类型注册阶段调用；使部分方法可从脚本/反射访问。
 	static void _bind_methods();
 
 public:
 	SpxPathFinder();
 	~SpxPathFinder();
 
+	// setup_spx 直接调用方：SpxNavigationMgr；顶层为 Go SetupPathFinder*。
+	// setup 同时是 ClassDB 暴露接口；会扫描当前场景并可创建调试 Node。
 	void setup_spx(GdVec2 size, GdVec2 cell_size, GdBool with_debug);
 	void setup(Vector2i size, Vector2i cell_size, bool with_debug = false);
 
@@ -66,6 +79,8 @@ public:
 
 	void set_sprite_obstacle(GdObj obj, bool enabled);
 
+	// find_path_spx 直接调用方：SpxNavigationMgr；顶层为 Go FindPath。
+	// find_path 是 Godot 坐标版本，也由 PathDebugDrawer 和脚本接口调用。
 	GdArray find_path_spx(GdVec2 p_from, GdVec2 p_to);
 	PackedVector2Array find_path(Vector2 start, Vector2 end);
 
@@ -115,33 +130,47 @@ private:
 	void _destroy_drawer();
 };
 
+// 寻路网格的交互式调试覆盖层：绘制阻塞格、起终点与路径，并处理鼠标拖拽。
+// 创建方为 SpxPathFinder::setup；直接回调方为 Godot 通知/输入系统；
+// 顶层来源为 Godot 帧绘制和平台鼠标事件。Node 生命周期归场景树所有。
 class PathDebugDrawer : public Node2D {
 	GDCLASS(PathDebugDrawer, Node2D);
 
 private:
+	// 强引用寻路器，保证调试节点存活期间 A* 数据有效；退出树时解除反向裸指针。
 	Ref<SpxPathFinder> path_finder;
+	// 最近一次计算出的 Godot 世界坐标路径，用于 _draw。
 	PackedVector2Array path;
 
+	// 鼠标指定的路径起点（Godot 世界坐标）。
 	Vector2 start;
+	// 鼠标指定的路径终点（Godot 世界坐标）。
 	Vector2 end;
+	// 是否已设置起点。
 	bool start_set = false;
+	// 是否已设置终点。
 	bool end_set = false;
+	// 鼠标命中起终点、开始拖拽的世界距离阈值。
 	float drag_threshold = 10.0;
 
 	enum DragState { NONE,
 		DRAG_START,
 		DRAG_END };
+	// 当前拖拽对象；只在 Godot 主线程输入回调内修改。
 	DragState dragging = NONE;
 
 protected:
 	PathDebugDrawer() = default;
 	~PathDebugDrawer() = default;
 
+	// _bind_methods 由 ClassDB 注册阶段调用；_notification 由 Godot 引擎派发。
 	static void _bind_methods();
 	void _notification(int p_what);
+	// 以下 ready/draw/exit_tree 由 _notification 转发，顶层是 SceneTree 生命周期/渲染。
 	void _ready();
 	void _draw();
 	void _exit_tree();
+	// Godot Viewport 输入传播回调；顶层来源为平台鼠标事件。
 	void input(const Ref<InputEvent> &p_event) override;
 
 public:

@@ -35,6 +35,9 @@
 #include "spx_layer_sorter.h"
 
 void SpxExtMgr::request_exit(GdInt exit_code) {
+	// 直接调用方：Native/Web 生成 bridge；顶层调用方：Go runtime RequestExit。
+	// Godot 规则：SceneTree::quit 只应在主线程调用；本入口不像 reset/pause 那样自动转投邮箱，
+	// 因而绑定层必须保证 request_exit 在 Godot 主线程执行。
 	auto callback = SpxEngine::get_singleton()->get_on_runtime_exit();
 	if (callback != nullptr) {
 		callback(exit_code);
@@ -45,37 +48,46 @@ void SpxExtMgr::request_exit(GdInt exit_code) {
 }
 
 void SpxExtMgr::request_reset(GdInt exit_code) {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go runtime reset 请求。
 	Spx::reset(exit_code);
 }
 
 void SpxExtMgr::request_restart() {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go 新一局启动流程。
 	Spx::restart();
 }
 
 void SpxExtMgr::on_runtime_panic(GdString msg) {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go runtime panic 处理。
+	// msg 是同步借用字符串，回调若需保存必须自行复制。
 	auto callback = SpxEngine::get_singleton()->get_on_runtime_panic();
 	if (callback != nullptr) {
 		callback(msg);
 	}
 }
 
-// Pause API implementations - delegate to Spx layer
+// 暂停 API 统一转发给 Spx 层，由其处理主线程投递。
 void SpxExtMgr::pause() {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go engine pause API。
 	Spx::pause();
 }
 
 void SpxExtMgr::resume() {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go engine resume API。
 	Spx::resume();
 }
 
 GdBool SpxExtMgr::is_paused() {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go engine 状态查询。
 	return Spx::is_paused();
 }
 
 void SpxExtMgr::next_frame() {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go 调试单步 API。
 	Spx::next_frame();
 }
 
 void SpxExtMgr::set_layer_sorter_mode(GdInt mode) {
+	// 直接调用方：Native/Web bridge；顶层调用方：Go 图层排序配置。
 	SpxLayerSorter::instance().set_mode((LayerSortMode)mode);
 }

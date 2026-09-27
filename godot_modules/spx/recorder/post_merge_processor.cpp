@@ -13,6 +13,9 @@
 #include "core/os/time.h"
 #include "movie_utils.h"
 
+// 录制后处理分两条路径：调用系统 FFmpeg 做 stream copy，或用 Godot FileAccess
+// 解析两个模块自产 AVI 并重写为双流 AVI。所有操作都发生在录制 worker 停止、文件关闭之后。
+
 PostMergeProcessor::PostMergeProcessor() {
 	// Initialize with default configuration
 }
@@ -24,6 +27,10 @@ void PostMergeProcessor::set_config(const MergeConfig &p_config) {
 	config = p_config;
 }
 
+// 音视频合并总入口，负责校验、选择后端、记录耗时并按策略清理中间文件。
+// 直接调用方：ObsStyleMovieWriter::perform_post_merge()；顶层调用方：Native API，或
+// cmd/spx 启动的 --write-movie 录制结束。
+// 本函数同步执行 FileAccess/OS::execute，会阻塞调用线程，不能在音频回调或录制 worker 中调用。
 PostMergeProcessor::MergeResult PostMergeProcessor::merge_files(const String &video_path, const String &audio_path, const String &output_path) {
 	MergeResult result;
 	uint64_t start_time = OS::get_singleton()->get_ticks_usec();
@@ -37,6 +44,7 @@ PostMergeProcessor::MergeResult PostMergeProcessor::merge_files(const String &vi
 	}
 
 	// Validate merge request
+	// 在创建/覆盖输出文件前先检查后端能力和两个输入文件。
 	Error validation_error = validate_merge_request(video_path, audio_path, output_path);
 	if (validation_error != OK) {
 		result.error_code = validation_error;
@@ -45,6 +53,7 @@ PostMergeProcessor::MergeResult PostMergeProcessor::merge_files(const String &vi
 	}
 
 	// Execute merge based on selected method
+	// METHOD_NONE 不写新文件，直接把视频中间文件作为主输出返回。
 	switch (config.method) {
 		case METHOD_FFMPEG_SYSTEM:
 			result.error_code = ffmpeg_system_merge(video_path, audio_path, output_path, result);
@@ -70,6 +79,7 @@ PostMergeProcessor::MergeResult PostMergeProcessor::merge_files(const String &vi
 	result.merge_duration_seconds = (end_time - start_time) / 1000000.0f;
 
 	// Clean up intermediate files if requested and merge was successful
+	// 只有合并成功且明确配置不保留时才删除两个中间文件。
 	if (result.error_code == OK && config.keep_intermediate_files == false && config.method != METHOD_NONE) {
 		Error cleanup_error = cleanup_intermediate_files(video_path, audio_path);
 		result.intermediate_files_cleaned = (cleanup_error == OK);
@@ -100,9 +110,13 @@ PostMergeProcessor::MergeResult PostMergeProcessor::merge_files(const String &vi
 	return result;
 }
 
+// 用参数列表同步启动 FFmpeg，避免 shell 字符串拼接；采用 stream copy，不重新编码。
+// 直接调用方：merge_files()；顶层调用方：录制停止后处理。
+// Godot 规则：OS::execute 在 Web 不可用，并会阻塞当前线程直到子进程结束。
 Error PostMergeProcessor::ffmpeg_system_merge(const String &video_path, const String &audio_path, const String &output_path, MergeResult &result) {
 #ifdef WEB_ENABLED
 	// Web platform doesn't support system command execution
+	// Web 沙箱不允许执行系统命令。
 	result.error_message = "FFmpeg system merge not supported on Web platform";
 	return ERR_UNAVAILABLE;
 #else
@@ -112,6 +126,7 @@ Error PostMergeProcessor::ffmpeg_system_merge(const String &video_path, const St
 	}
 
 	// Build FFmpeg command arguments
+	// 使用 List<String> 逐参数传递路径，不经过 shell 展开。
 	List<String> args;
 	args.push_back("-i");
 	args.push_back(video_path);
@@ -123,6 +138,7 @@ Error PostMergeProcessor::ffmpeg_system_merge(const String &video_path, const St
 	args.push_back("-y"); // Overwrite output file if exists
 
 	// Execute FFmpeg command
+	// 同步等待进程退出并捕获标准输出。
 	String stdout_output;
 	int exit_code = OS::get_singleton()->execute(config.ffmpeg_path, args, &stdout_output);
 
@@ -144,10 +160,14 @@ Error PostMergeProcessor::ffmpeg_system_merge(const String &video_path, const St
 #endif
 }
 
+// 使用内建 RIFF/AVI 解析器生成双流文件。
+// 直接调用方：merge_files()；顶层调用方：录制停止后处理。
+// FileAccess 实例只在当前线程串行使用；调用前两个中间 writer 必须已经 close。
 Error PostMergeProcessor::custom_avi_merge(const String &video_path, const String &audio_path, const String &output_path, MergeResult &result) {
 	uint64_t merge_start_time = OS::get_singleton()->get_ticks_usec();
 
 	// Parse input AVI files
+	// 解析器针对 SimpleVideoWriter/SimpleAudioWriter 产生的受控 AVI 子集。
 	AviFileInfo video_info, audio_info;
 
 	Error video_parse_error = parse_avi_file(video_path, video_info);
@@ -163,6 +183,7 @@ Error PostMergeProcessor::custom_avi_merge(const String &video_path, const Strin
 	}
 
 	// Create output file
+	// 以 WRITE 打开会创建或截断目标文件，前置校验必须已完成。
 	Ref<FileAccess> output_file = FileAccess::open(output_path, FileAccess::WRITE);
 	if (output_file.is_null()) {
 		result.error_message = "Cannot create output file: " + output_path;
@@ -178,6 +199,7 @@ Error PostMergeProcessor::custom_avi_merge(const String &video_path, const Strin
 	}
 
 	// Interleave video and audio data
+	// 根据配置选择简单交替或按时间戳排序的 movi 重写。
 
 	Error interleave_error;
 	if (config.interleave_strategy == MergeConfig::INTERLEAVE_SIMPLE_ALTERNATE) {
@@ -193,6 +215,7 @@ Error PostMergeProcessor::custom_avi_merge(const String &video_path, const Strin
 	}
 
 	// Update file size in RIFF header
+	// 全部数据和索引完成后回填 RIFF 总长度，再显式关闭输出句柄。
 	uint64_t final_size = output_file->get_position();
 	output_file->seek(4);
 	output_file->store_32((uint32_t)(final_size - 8));
@@ -213,6 +236,7 @@ Error PostMergeProcessor::custom_avi_merge(const String &video_path, const Strin
 	return OK;
 }
 
+// 通过 `ffmpeg -version` 探测系统后端；直接调用方：方法选择/合并前校验。
 bool PostMergeProcessor::check_ffmpeg_availability() {
 #ifdef WEB_ENABLED
 	return false;
@@ -233,6 +257,9 @@ bool PostMergeProcessor::file_exists(const String &path) {
 	return file.is_valid();
 }
 
+// 成功合并后删除两个中间文件。
+// 直接调用方：merge_files()；只传入本次会话生成的明确路径，不接受目录或通配符。
+// DirAccess::remove 是不可恢复删除，因此任一路径失败都会返回错误并保留清理状态为 false。
 Error PostMergeProcessor::cleanup_intermediate_files(const String &video_path, const String &audio_path) {
 	Error video_error = OK;
 	Error audio_error = OK;
@@ -258,6 +285,7 @@ Error PostMergeProcessor::cleanup_intermediate_files(const String &video_path, c
 	}
 
 	// Return error if either cleanup failed
+	// 任一删除失败都向上报告，但不会回滚已经完成的另一项删除。
 	if (video_error != OK) {
 		return video_error;
 	}
@@ -276,7 +304,9 @@ uint64_t PostMergeProcessor::get_file_size(const String &path) {
 	return 0;
 }
 
-// AVI file parsing implementation
+// AVI 文件解析阶段：只提取合并所需的 avih/strh、movi 偏移和 idx1。
+// FileAccess 由 Ref 管理，离开函数后自动释放；同一实例不会跨线程共享。
+// 直接调用方：custom_avi_merge()。
 Error PostMergeProcessor::parse_avi_file(const String &file_path, AviFileInfo &avi_info) {
 	Ref<FileAccess> file = FileAccess::open(file_path, FileAccess::READ);
 	if (file.is_null()) {
@@ -299,6 +329,7 @@ Error PostMergeProcessor::parse_avi_file(const String &file_path, AviFileInfo &a
 	}
 
 	// Parse AVI structure based on SimpleAudioWriter/SimpleVideoWriter format
+	// 这里只解析本模块两个 SimpleWriter 生成的固定结构，不是通用 AVI 解复用器。
 	bool found_hdrl = false;
 	bool found_movi = false;
 
@@ -386,6 +417,7 @@ Error PostMergeProcessor::parse_avi_file(const String &file_path, AviFileInfo &a
 	return OK;
 }
 
+// 解析 hdrl 主头和每个 strl 流描述；直接调用方：parse_avi_file()。
 Error PostMergeProcessor::parse_hdrl_chunk(Ref<FileAccess> file, AviFileInfo &avi_info, uint32_t chunk_size) {
 	uint64_t hdrl_start = file->get_position();
 	uint64_t chunk_end = hdrl_start + chunk_size;
@@ -456,6 +488,8 @@ Error PostMergeProcessor::parse_hdrl_chunk(Ref<FileAccess> file, AviFileInfo &av
 	return OK;
 }
 
+// 读取一个 strh 时间基准/长度，并跳过合并不需要复制的 strf 负载。
+// 直接调用方：parse_hdrl_chunk()。
 Error PostMergeProcessor::parse_stream_header(Ref<FileAccess> file, AviFileInfo::StreamInfo &stream_info, uint32_t chunk_size) {
 	uint64_t strl_start = file->get_position();
 	uint64_t chunk_end = strl_start + chunk_size;
@@ -505,6 +539,8 @@ Error PostMergeProcessor::parse_stream_header(Ref<FileAccess> file, AviFileInfo:
 	return OK;
 }
 
+// 读取传统 idx1 条目；缺失索引时后续 interleave 会回退扫描 movi。
+// 直接调用方：parse_avi_file()。
 Error PostMergeProcessor::parse_idx1_chunk(Ref<FileAccess> file, AviFileInfo &avi_info, uint32_t chunk_size) {
 	uint32_t entry_count = chunk_size / 16; // Each index entry is 16 bytes
 
@@ -525,6 +561,7 @@ Error PostMergeProcessor::parse_idx1_chunk(Ref<FileAccess> file, AviFileInfo &av
 	return OK;
 }
 
+// 判断后端在当前平台是否可用；直接调用方：validate_merge_request()/get_recommended_method()。
 bool PostMergeProcessor::is_method_available(MergeMethod method) {
 	switch (method) {
 		case METHOD_FFMPEG_SYSTEM:
@@ -546,6 +583,8 @@ bool PostMergeProcessor::is_method_available(MergeMethod method) {
 	}
 }
 
+// 给当前平台选择默认后端。现阶段 Native 优先内建 AVI，Web 保留独立文件。
+// 直接调用方：ObsStyleMovieWriter::perform_post_merge()。
 PostMergeProcessor::MergeMethod PostMergeProcessor::get_recommended_method() {
 #ifdef WEB_ENABLED
 	return METHOD_NONE; // Web platform keeps separate files
@@ -574,6 +613,8 @@ String PostMergeProcessor::get_method_name(MergeMethod method) {
 	}
 }
 
+// 在任何输出写入前验证后端、输入文件和目标目录。
+// 直接调用方：merge_files()；顶层调用方：录制停止后处理。
 Error PostMergeProcessor::validate_merge_request(const String &video_path, const String &audio_path, const String &output_path) {
 	// Check if method is available
 	if (!is_method_available(config.method)) {
@@ -615,7 +656,8 @@ Error PostMergeProcessor::validate_merge_request(const String &video_path, const
 	return OK;
 }
 
-// AVI header merging implementation
+// AVI 输出阶段：先写双流头，再由交错函数写 movi/idx1，最后由 custom_avi_merge 回填 RIFF 长度。
+// 以下 FileAccess 均为当前合并调用独占，不得与录制 writer 并发使用。
 Error PostMergeProcessor::write_merged_avi_header(Ref<FileAccess> output_file, const AviFileInfo &video_info, const AviFileInfo &audio_info) {
 	// Write RIFF header
 	output_file->store_buffer((const uint8_t *)"RIFF", 4);
@@ -665,6 +707,7 @@ Error PostMergeProcessor::write_merged_avi_header(Ref<FileAccess> output_file, c
 	return OK;
 }
 
+// 写 Stream 0 的 MJPEG 描述；直接调用方：write_merged_avi_header()。
 Error PostMergeProcessor::write_video_stream_header(Ref<FileAccess> output_file, const AviFileInfo &video_info) {
 	// VIDEO STREAM (Stream 0)
 	output_file->store_buffer((const uint8_t *)"LIST", 4);
@@ -720,6 +763,8 @@ Error PostMergeProcessor::write_video_stream_header(Ref<FileAccess> output_file,
 	return OK;
 }
 
+// 写 Stream 1 的 16-bit PCM 描述；输入中间文件为 32-bit，数据块阶段同步降位宽。
+// 直接调用方：write_merged_avi_header()。
 Error PostMergeProcessor::write_audio_stream_header(Ref<FileAccess> output_file, const AviFileInfo &audio_info) {
 	// Get audio sample rate and channels from stream info
 	uint32_t sample_rate = 44100; // Default
@@ -775,6 +820,8 @@ Error PostMergeProcessor::write_audio_stream_header(Ref<FileAccess> output_file,
 	return OK;
 }
 
+// 兼容模式：视频块、音频块简单交替，并把 PCM 32-bit 转为 16-bit。
+// 直接调用方：custom_avi_merge()；顶层调用方：INTERLEAVE_SIMPLE_ALTERNATE 配置。
 Error PostMergeProcessor::interleave_avi_data(const String &video_path, const String &audio_path, Ref<FileAccess> output_file, const AviFileInfo &video_info, const AviFileInfo &audio_info) {
 	if (config.enable_debug_output) {
 		print_line("PostMergeProcessor: Starting data interleaving");
@@ -941,6 +988,8 @@ Error PostMergeProcessor::interleave_avi_data(const String &video_path, const St
 	return OK;
 }
 
+// 在 idx1 缺失时线性扫描 movi，重建合并所需的块列表；直接调用方：两种 interleave。
+// 扫描始终受 movi_offset/movi_size 边界约束，异常大块会终止解析。
 void PostMergeProcessor::scan_movi_chunks(Ref<FileAccess> file, uint64_t movi_offset, uint32_t movi_size, Vector<AviFileInfo::IndexEntry> &chunks) {
 	uint64_t pos = movi_offset;
 	uint64_t movi_end = movi_offset + movi_size;
@@ -980,6 +1029,7 @@ void PostMergeProcessor::scan_movi_chunks(Ref<FileAccess> file, uint64_t movi_of
 	}
 }
 
+// 把合并过程中累计的相对偏移写为传统 idx1；直接调用方：两种 interleave。
 Error PostMergeProcessor::write_merged_avi_index(Ref<FileAccess> output_file, const Vector<AviFileInfo::IndexEntry> &merged_index) {
 	// Write idx1 chunk
 	output_file->store_buffer((const uint8_t *)"idx1", 4);
@@ -995,7 +1045,8 @@ Error PostMergeProcessor::write_merged_avi_index(Ref<FileAccess> output_file, co
 	return OK;
 }
 
-// Timestamp-based interleaving implementation
+// 时间戳模式：分别推导音视频块时间，统一排序后写入 movi，可选检查最近块的 A/V 漂移。
+// 直接调用方：custom_avi_merge()；顶层调用方：默认内建 AVI 合并策略。
 Error PostMergeProcessor::interleave_avi_data_timestamped(const String &video_path, const String &audio_path, Ref<FileAccess> output_file, const AviFileInfo &video_info, const AviFileInfo &audio_info) {
 	// Open input files
 	Ref<FileAccess> video_file = FileAccess::open(video_path, FileAccess::READ);
@@ -1100,6 +1151,8 @@ Error PostMergeProcessor::interleave_avi_data_timestamped(const String &video_pa
 	return OK;
 }
 
+// 从视频固定帧时长或音频累计样本数推导相对微秒时间戳。
+// 直接调用方：interleave_avi_data_timestamped()。
 void PostMergeProcessor::calculate_chunk_timestamps(const Vector<AviFileInfo::IndexEntry> &chunks, const AviFileInfo &info, bool is_video, Vector<TimestampedChunk> &timestamped_chunks) {
 	if (is_video) {
 		// Video timestamp calculation
@@ -1151,6 +1204,7 @@ void PostMergeProcessor::calculate_chunk_timestamps(const Vector<AviFileInfo::In
 	}
 }
 
+// 计算与单视频帧接近且对齐 256 样本的音频块大小；当前作为后续缓冲策略辅助入口保留。
 uint32_t PostMergeProcessor::calculate_optimal_audio_chunk_size(uint32_t video_fps, uint32_t sample_rate) {
 	// Calculate optimal audio chunk size to match video frame duration
 	double frame_duration_s = 1.0 / video_fps;
@@ -1160,6 +1214,7 @@ uint32_t PostMergeProcessor::calculate_optimal_audio_chunk_size(uint32_t video_f
 	return ((samples_per_frame + 255) / 256) * 256;
 }
 
+// 判断最近音视频时间戳漂移是否落在配置阈值内；直接调用方：时间戳交错诊断。
 bool PostMergeProcessor::validate_av_sync(uint64_t video_ts, uint64_t audio_ts) {
 	uint64_t drift = video_ts > audio_ts ? video_ts - audio_ts : audio_ts - video_ts;
 
@@ -1170,6 +1225,8 @@ bool PostMergeProcessor::validate_av_sync(uint64_t video_ts, uint64_t audio_ts) 
 	return true;
 }
 
+// 复制一个排序后的媒体块，必要时把音频降为 16-bit，并同步追加输出索引。
+// 直接调用方：interleave_avi_data_timestamped()。
 Error PostMergeProcessor::write_timestamped_chunk(Ref<FileAccess> input_file, Ref<FileAccess> output_file,
 		const TimestampedChunk &chunk, bool is_video,
 		uint32_t &chunk_offset, Vector<AviFileInfo::IndexEntry> &merged_index) {

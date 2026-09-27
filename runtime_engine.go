@@ -84,46 +84,89 @@ func (p *Game) OnEngineReset() {
 	p.reset()
 }
 
-// OnEngineBeforeUpdate samples input and conditions before the clock advances.
+// OnEngineBeforeUpdate 在每帧逻辑时间推进前完成“采样”，但不执行用户事件处理器。
+//
+// 直接调用方：internal/engine.onUpdate()。调用它之前，底层键盘、鼠标和触发事件
+// 已经完成 pending -> ready 的帧边界缓存；调用它之后，onUpdate() 才会推进
+// SPX 逻辑时间，并进入 OnEngineUpdate() 和 gco.Update()。
+//
+// 本函数主要承担两项工作：
+//  1. 存在输入录制/回放会话时，消费本帧 ready 输入，解析出确定性的有效输入状态，
+//     并暂存由该输入产生的高层事件；普通实时输入不在这里处理，而由 inputEventLoop
+//     在后面的 gco.Update() 中采样。
+//  2. OnStart 已派发后，在当前有效输入状态和尚未推进的逻辑时钟上评估 OnCond
+//     条件，只记录本帧命中的上升沿；处理器稍后由 OnEngineUpdate() 启动。
+//
+// 这种“先采样、后推进时间、再派发”的拆分，使输入会话中的条件判断看到同一个
+// 有效输入快照，同时避免输入事件处理器在条件采样之前修改游戏状态。
 func (p *Game) OnEngineBeforeUpdate(delta float64) {
+	// 丢弃上一帧未派发的条件快照，防止输入会话无法开启本帧时误用旧结果。
 	p.scriptEvents.pendingConditions = nil
+	// 游戏资源加载完成后才允许输入会话推进。普通实时输入没有 inputSession，
+	// 会直接跳过这一段，留给 inputEventLoop 在 gco.Update() 中处理。
 	if p.lifecycleState.IsRunned.Load() {
+		// 录制模式从底层 ready 队列采样真实输入；回放模式解析出记录中的输入帧。
+		// prepareInputSessionTick 只更新本帧有效输入状态并暂存高层事件，不派发处理器。
+		// 返回 false 表示会话不处于 Running、同一帧已打开或解析失败；此时不再
+		// 采样条件。若没有已准备的 pending，OnEngineUpdate 也会跳过本帧逻辑。
 		if session := p.currentInputSession(); session != nil && !p.inputMgr.prepareInputSessionTick(session, delta) {
 			return
 		}
 	}
+	// 条件事件必须晚于 OnStart：bootstrap 和 OnStart 可以注册条件或初始化条件
+	// 依赖的状态。这里只评估条件并保存命中的 sink，不启动用户协程。
 	if p.lifecycleState.StartDispatched.Load() {
 		p.scriptEvents.sampleConditions()
 	}
 }
 
+// OnEngineUpdate 消费 BeforeUpdate 生成的帧快照，并执行本帧常规游戏更新。
+// 条件处理器先登记，输入会话事件随后登记；它们真正取得脚本执行权仍受 gco 调度。
 func (p *Game) OnEngineUpdate(float64) {
 	if !p.lifecycleState.IsRunned.Load() {
 		return
 	}
 	session := p.currentInputSession()
+	// 有输入会话却没有本帧快照，说明 BeforeUpdate 未能开启/解析该 tick；
+	// 整个 GameUpdate 必须跳过，避免使用上一帧输入重复推进游戏状态。
 	if session != nil && session.input.pending == nil {
 		return
 	}
+	// 使用 BeforeUpdate 已经选出的条件 sink，不在这里重新求值。
+	// 此处直接启动协程，如果StartDispatched 没有完成，内部没有处理器，相当于什么也没做
 	p.scriptEvents.dispatchConditions()
 	if session != nil {
+		// 此时逻辑时钟已经推进，才执行截图热键并启动本帧输入事件处理协程。
 		p.inputMgr.dispatchInputSessionTick(session)
 	}
 	p.soundMgr.Update()
+	// bootstrap 完成后派发一次 OnStart；之后执行普通逐帧回调。
+	// runFrameScripts 这个函数名如何理解，感觉不是很匹配啊？
 	p.runFrameScripts()
+	// 将 Go 侧本帧产生的精灵代理、相机、激活和销毁变化批量推送到 Godot。
 	p.updateSpriteProxies()
+	// 再从物理引擎批量读取启用物理精灵的位置，回写到 Go 侧 SpriteImpl。
 	p.pullPhysicsPositions()
 }
 
+// OnEngineRender 是每帧的“渲染前准备”阶段，不直接调用 Godot 的绘制 API。
+// 它先提交 gco.Update() 期间产生的视觉变化，再消费本帧已经封存的物理触发事件；
+// 当前回调返回后，Godot 才会使用最新的节点状态进入自己的实际绘制流程。
 func (p *Game) OnEngineRender(float64) {
 	defer p.flushPenCommands()
 	if !p.lifecycleState.IsRunned.Load() {
 		return
 	}
-	// Flush coroutine changes before drawing.
+	// 协程可能在 GameUpdate 之后才修改精灵，因此在 Godot 绘制前再做一次视觉同步。
+	// takeCloneProxyPublications 消费“有克隆已完成首段初始化”的通知；真正的
+	// Ready -> Published 转换发生在紧随其后的 syncPostCoroutineVisuals 扫描中。
 	p.shapeMgr.takeCloneProxyPublications()
 	p.syncPostCoroutineVisuals()
-	// Drain bootstrap collisions before OnStart.
+
+	// 物理回调产生的触发事件已经在 onUpdate 开始时完成 pending -> ready；
+	// 这里消费 ready 快照，校验精灵仍然有效后，启动对应的 OnTouchStart 处理器。
+	// 触发处理放在视觉同步之后，是为了让用户脚本看到本帧最新的精灵/物理状态，
+	// 同时避免在 Godot 的物理回调或同步批处理中直接执行用户脚本。
 	p.processPhysicsTriggers()
 }
 
@@ -317,6 +360,11 @@ func (p *Game) startBootstrap(generation uint64) {
 	})
 }
 
+// runMain 在当前调用线程/协程中执行 Main，并维护嵌套 Main 的计时上下文。
+//
+// 直接调用方：runMainUntilYield、cloneSprite；总体流程调用方分别是项目 bootstrap 与
+// 运行时 Clone。cloneSprite 不会为克隆 Main 新建协程：若 Clone 来自事件处理协程，
+// 克隆 Main 就在该协程的当前执行片段中运行；只有之后的 OnCloned 会单独创建协程。
 func runMain(call func()) {
 	// Main 可能由普通 Go 调用，也可能由 SPX 协程调度。
 	// 普通调用没有协程线程上下文，直接执行即可。

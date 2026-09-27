@@ -38,7 +38,14 @@
 #include "spx_res_mgr.h"
 #include "spx_sprite_render_util.h"
 
+// 精灵最终绘制由三层变换共同决定：
+// 1. SpxSprite 根节点承载世界位置、旋转和逻辑缩放；
+// 2. RenderRoot 承载 Go 根据服装轴心计算出的 render_offset；
+// 3. Anim2D 承载纹理/动画帧、帧级偏移和 render_scale。
+// 因此 render_offset 不能直接加到根节点位置，否则会改变碰撞和排序使用的世界位置。
+
 void SpxSprite::set_render_offset(GdVec2 p_render_offset) {
+	// 直接调用方：SpxSpriteMgr::set_pivot/批量 transform；顶层调用方：Go 服装轴心同步。
 	if (render_offset == p_render_offset) {
 		return;
 	}
@@ -80,6 +87,7 @@ GdBool SpxSprite::is_dynamic_frame_offset_enabled() const {
 }
 
 void SpxSprite::_commit_visual(const PreparedVisual &p_visual) {
+	// 直接调用方：动画/纹理准备流程；先准备后一次性提交，避免资源失败导致半更新外观。
 	visual_source = p_visual.source;
 	source_sprite_frames = p_visual.shared_frames;
 	anim2d->set_sprite_frames(p_visual.frames);
@@ -99,11 +107,13 @@ void SpxSprite::_update_anim_scale() {
 			_update_svg_scale_content(target_scale);
 		}
 	}
-	// Failed rasterization retains the old source and its actual raster scale.
+	// 栅格化失败时保留旧视觉来源及其实际栅格倍率。
 	anim2d->set_scale(_render_scale / visual_source.raster_scale);
 }
 
 bool SpxSprite::_update_svg_scale_content(int p_target_scale) {
+	// 直接调用方：渲染缩放和帧变化；顶层来自 Go costume scale。
+	// SVG 在目标倍率变化时重栅格化，而 Node2D 变换保持逻辑尺寸不变。
 	PreparedVisual visual;
 	if (visual_source.is_single_image()) {
 		Ref<Texture2D> texture = resMgr->load_svg_texture(visual_source.key, p_target_scale);
@@ -128,7 +138,7 @@ bool SpxSprite::_update_svg_scale_content(int p_target_scale) {
 	const float progress = anim2d->get_frame_progress();
 	_commit_visual(visual);
 	if (!visual_source.is_single_image()) {
-		// Preserve custom speed even while paused or speed_scale is zero.
+		// 即使动画暂停或 speed_scale 为零，也保留用户设置的基础速度。
 		anim2d->play(visual.animation, playback_speed);
 		if (!was_playing) {
 			anim2d->pause();
@@ -162,6 +172,7 @@ Vector2 SpxSprite::_get_actual_render_scale() {
 }
 
 void SpxSprite::_on_frame_changed() {
+	// 直接调用方：Godot frame_changed 信号及手动设帧；按帧元数据刷新动态轴心。
 	if (anim2d == nullptr || !enable_dynamic_frame_offset) {
 		return;
 	}

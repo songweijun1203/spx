@@ -44,6 +44,7 @@
 
 namespace {
 
+// Godot 的 connect 可重复注册同一 Callable；场景预制和运行时初始化都可能走到这里，故先去重。
 void connect_signal_once(Object *source, const StringName &signal_name, Object *target, const StringName &method_name) {
 	if (source == nullptr || target == nullptr) {
 		return;
@@ -82,6 +83,7 @@ bool SpxSprite::_get_use_default_frames() {
 }
 
 void SpxSprite::_bind_methods() {
+	// 直接调用方：Godot ClassDB 注册阶段；顶层用途：场景属性序列化及信号 Callable 按名称回调。
 	ClassDB::bind_method(D_METHOD("set_gid", "gid"), &SpxSprite::set_gid);
 	ClassDB::bind_method(D_METHOD("get_gid"), &SpxSprite::get_gid);
 	ADD_PROPERTY(PropertyInfo(Variant::INT, "gid"), "set_gid", "get_gid");
@@ -133,6 +135,7 @@ void SpxSprite::_bind_methods() {
 }
 
 void SpxSprite::on_destroy_call() {
+	// 直接调用方：NOTIFICATION_PREDELETE；顶层由 queue_free/场景卸载触发，通知 Manager 清除 Go ID 映射。
 	if (!Spx::is_initialized()) {
 		return;
 	}
@@ -149,6 +152,7 @@ SpxSprite::~SpxSprite() {
 }
 
 void SpxSprite::_notification(int p_what) {
+	// Godot 规则：_notification 由引擎派发；物理通知位于固定时间步，PREDELETE 时对象即将失效。
 	switch (p_what) {
 		case NOTIFICATION_PHYSICS_PROCESS:
 			_physics_process(get_physics_process_delta_time());
@@ -162,6 +166,8 @@ void SpxSprite::_notification(int p_what) {
 }
 
 void SpxSprite::_resolve_runtime_components() {
+	// 直接调用方：on_start；顶层来自 SpxSpriteMgr 创建/克隆精灵。
+	// add_child/reparent 后子节点由场景树拥有，这里保存的仅是主线程借用指针。
 	render_root = get_named_child<Node2D>(this, "RenderRoot");
 	if (render_root == nullptr) {
 		render_root = memnew(Node2D);
@@ -230,6 +236,7 @@ void SpxSprite::_ensure_visible_notifier() {
 }
 
 void SpxSprite::_connect_runtime_signals() {
+	// Godot 信号在发射线程同步调用 Callable；这些节点信号均发生在场景/物理主线程。
 	connect_signal_once(area2d, "area_entered", this, "on_area_entered");
 	connect_signal_once(area2d, "area_exited", this, "on_area_exited");
 
@@ -244,6 +251,8 @@ void SpxSprite::_connect_runtime_signals() {
 }
 
 void SpxSprite::on_start() {
+	// 直接调用方：SpxSpriteMgr::_create_sprite、clone_sprite/_register_sprite；
+	// 顶层调用方：Go 游戏加载、克隆 API。此时节点必须已经加入场景树。
 	_resolve_runtime_components();
 
 	ERR_FAIL_NULL_MSG(collider2d, "SpxSprite: CollisionShape2D component is missing.");
@@ -289,6 +298,7 @@ String SpxSprite::get_spx_type_name() {
 }
 
 void SpxSprite::_on_area_entered(Node *p_node) {
+	// 直接调用方：Godot Area2D::area_entered 信号；顶层消费者是 Go runtime 的 OnTouchStart。
 	if (!Spx::is_initialized() || is_backdrop) {
 		return;
 	}
@@ -301,6 +311,7 @@ void SpxSprite::_on_area_entered(Node *p_node) {
 }
 
 void SpxSprite::_on_area_exited(Node *p_node) {
+	// 直接调用方：Godot Area2D::area_exited 信号；顶层消费者是 Go runtime 的触碰结束状态机。
 	if (!Spx::is_initialized() || is_backdrop) {
 		return;
 	}
@@ -333,6 +344,7 @@ void SpxSprite::_on_sprite_animation_changed() {
 }
 
 void SpxSprite::_on_sprite_frame_changed() {
+	// 直接调用方：AnimatedSprite2D frame_changed；顶层驱动 Go 动画事件并刷新逐帧轴心/Shader UV。
 	if (!Spx::is_initialized()) {
 		return;
 	}

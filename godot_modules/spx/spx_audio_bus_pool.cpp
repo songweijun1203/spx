@@ -60,6 +60,7 @@ SpxAudioBusPool *SpxAudioBusPool::get_singleton() {
 }
 
 void SpxAudioBusPool::init() {
+	// 直接调用方：SpxAudioMgr::on_awake；顶层为 Godot/SPX 引擎启动。
 	STR_BUS_MASTER = "Master";
 	STR_BUS_SFX = "Sfx";
 	STR_BUS_MUSIC = "Music";
@@ -71,6 +72,7 @@ void SpxAudioBusPool::init() {
 }
 
 void SpxAudioBusPool::reset() {
+	// 直接调用方：init 和 SpxAudioMgr::on_reset；顶层为启动或 Go 重置游戏。
 	if (singleton == nullptr) {
 		return;
 	}
@@ -83,8 +85,7 @@ void SpxAudioBusPool::reset() {
 	singleton->ensure_bus(STR_BUS_SFX);
 	singleton->ensure_bus(STR_BUS_MUSIC);
 
-	// Only reset buses created by this pool. A project bus may intentionally
-	// use the same prefix, so inferring ownership from its name is unsafe.
+	// 只重置本池创建的总线。项目可能有意使用相同前缀，不能靠名称推断所有权。
 	for (const StringName &bus_name : singleton->created_buses) {
 		const int bus_id = audio_server->get_bus_index(bus_name);
 		if (bus_id >= 0) {
@@ -103,6 +104,7 @@ void SpxAudioBusPool::reset() {
 }
 
 void SpxAudioBusPool::shutdown() {
+	// 直接调用方：SpxAudioMgr::on_destroy；只删除 created_buses，保留项目自带总线。
 	if (singleton == nullptr) {
 		return;
 	}
@@ -127,6 +129,7 @@ void SpxAudioBusPool::shutdown() {
 }
 
 StringName SpxAudioBusPool::alloc() {
+	// AudioServer 总线索引会因增删而变化，因此对外只保存名称，每次使用重新查索引。
 	AudioServer *audio_server = AudioServer::get_singleton();
 	if (audio_server == nullptr) {
 		return StringName();
@@ -167,9 +170,8 @@ void SpxAudioBusPool::free(const StringName &p_name) {
 		return;
 	}
 
-	// Return to the pool
+	// 归还空闲池并恢复默认音量/声像，防止下一个 SpxAudio 继承旧效果。
 	free_buses.push_back(p_name);
-	// reset the bus
 	reset_bus(bus_id);
 }
 
@@ -179,7 +181,7 @@ void SpxAudioBusPool::set_volume(const StringName &p_name, GdFloat p_volume) {
 		return;
 	}
 
-	// Convert to decibels (Godot uses decibel scale for volume)
+	// SPX 使用线性音量，Godot AudioServer 使用分贝，边界处统一换算。
 	auto db = Math::linear_to_db(p_volume);
 	AudioServer::get_singleton()->set_bus_volume_db(bus_id, db);
 }
@@ -190,7 +192,7 @@ GdFloat SpxAudioBusPool::get_volume(const StringName &p_name) {
 		return 0.0f;
 	}
 
-	// Get volume in decibels
+	// 将 Godot 分贝值还原为 SPX 使用的线性音量。
 	float db = AudioServer::get_singleton()->get_bus_volume_db(bus_id);
 	return Math::db_to_linear(db);
 }
@@ -201,7 +203,7 @@ void SpxAudioBusPool::set_pan(const StringName &p_name, GdFloat p_pan) {
 		return;
 	}
 
-	// Clamp pan between -1 and 1
+	// Godot AudioEffectPanner 的有效声像范围为 [-1, 1]。
 	p_pan = CLAMP(p_pan, -1.0f, 1.0f);
 
 	AudioServer *audio_server = AudioServer::get_singleton();
@@ -211,7 +213,6 @@ void SpxAudioBusPool::set_pan(const StringName &p_name, GdFloat p_pan) {
 		audio_server->add_bus_effect(bus_id, panner);
 	}
 
-	// Set the pan value
 	panner->set_pan(p_pan);
 }
 

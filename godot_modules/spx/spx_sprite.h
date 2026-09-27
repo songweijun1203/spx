@@ -60,7 +60,9 @@ public:
 };
 
 // 轻量纯渲染精灵：给普通 Sprite2D 增加 SPX 排序信息，不承载行为和物理状态。
+// 直接由 SpxSceneMgr 创建，顶层对应 Go 轻量场景精灵 API；节点所有权交给 pure_sprite_root。
 class SpxRenderSprite : public Sprite2D, public ISortableSprite {
+	// Godot 规定：参与 ClassDB/场景序列化的 Object 子类需声明 GDCLASS；节点由场景树拥有。
 	GDCLASS(SpxRenderSprite, Sprite2D);
 
 public:
@@ -86,7 +88,9 @@ private:
 };
 
 // 轻量静态精灵：给 StaticBody2D 增加排序和碰撞组件访问能力。
+// 直接由 SpxSceneMgr 创建，顶层对应 Go 静态场景精灵 API；节点和碰撞子节点归场景树所有。
 class SpxStaticSprite : public StaticBody2D, public ISortableSprite {
+	// Godot 规定：Node 派生类使用 GDCLASS 暴露运行时类型，不能由调用方直接 delete。
 	GDCLASS(SpxStaticSprite, StaticBody2D);
 
 public:
@@ -112,10 +116,20 @@ private:
 };
 
 // Go 逻辑精灵在 Godot 侧的运行时代理节点。
+//
+// 渲染链可以按下面的层级理解：
+//   SpxSprite(CharacterBody2D)        世界位置、旋转、逻辑缩放
+//   RenderRoot(Node2D)                服装轴心和视觉偏移
+//   Anim2D(AnimatedSprite2D)          纹理、动画帧、帧偏移和最终绘制
+//
+// SpxSpriteMgr 负责把 Go 对象 ID 映射到这个节点；Go 侧只提交状态快照，
+// 真正的纹理绘制仍由 Godot 的 AnimatedSprite2D 完成。物理子节点属于同一代理，
+// 但不参与这条视觉渲染链。
 // 节点本体是 CharacterBody2D，并持有 RenderRoot/Anim2D、Area2D/Trigger2D
 // 和 Collider2D 等子组件。SpxSpriteMgr 创建和登记它；Godot 驱动物理帧与通知；
 // Go 的属性、动画、渲染和物理命令先进入 Manager，再转发到本类。
 class SpxSprite : public CharacterBody2D, public ISortableSprite {
+	// Godot 规定：GDCLASS 必须位于类体开头；实例随场景树释放，销毁应走 queue_free()。
 	GDCLASS(SpxSprite, CharacterBody2D);
 
 public:
@@ -302,10 +316,10 @@ private:
 		SVG_TEXTURE };
 	// 当前视觉资源的来源描述；key/animation_name 用于在资源更新后重新解析。
 	struct VisualSource {
-		VisualKind kind = VisualKind::ANIMATION;
-		String key;
-		String animation_name;
-		int raster_scale = 1;
+		VisualKind kind = VisualKind::ANIMATION; // 当前外观是动画、SVG 动画、位图还是 SVG 单图。
+		String key; // SpxResMgr 中的动画键或资源路径，不拥有对应资源。
+		String animation_name; // Go 侧可见的服装/动画名，用于事件回调和重载恢复。
+		int raster_scale = 1; // SVG 当前栅格倍率；位图资源固定为 1。
 		bool is_svg() const {
 			return kind == VisualKind::SVG_TEXTURE ||
 					kind == VisualKind::SVG_ANIMATION;
@@ -316,10 +330,10 @@ private:
 	};
 	// 提交前已准备完成的视觉快照，保证切换过程不会留下半更新状态。
 	struct PreparedVisual {
-		VisualSource source;
-		Ref<SpriteFrames> shared_frames;
-		Ref<SpriteFrames> frames;
-		StringName animation;
+		VisualSource source; // 本次切换准备采用的逻辑资源描述。
+		Ref<SpriteFrames> shared_frames; // 资源管理器共享的原始帧；Ref 按 Godot 引用计数持有。
+		Ref<SpriteFrames> frames; // 分配给当前播放器的帧元数据副本，纹理仍通过 Ref 共享。
+		StringName animation; // frames 中实际选择的 Godot 动画名。
 	};
 	bool _prepare_animation(const String &p_name, PreparedVisual &r_visual,
 			int p_raster_scale = 0);
@@ -339,45 +353,46 @@ private:
 	Vector2 render_offset; // RenderRoot 相对物理节点的位置偏移。
 
 	// 物理状态；external_forces 持续积分，pending_impulse 只在下一物理帧消费一次。
-	PhysicsMode physics_mode = NO_PHYSICS;
-	bool use_gravity = true;
-	float gravity_scale = 1.0f;
-	float mass_value = 1.0f;
-	float drag_value = 0.0f;
-	float friction_value = 300.0f;
-	Vector2 external_forces = Vector2();
-	Vector2 pending_impulse = Vector2();
-	float _gravity = 980.0f;
+	PhysicsMode physics_mode = NO_PHYSICS; // 当前 SPX 物理策略，决定每个物理帧的处理分支。
+	bool use_gravity = true; // 动态模式是否叠加重力。
+	float gravity_scale = 1.0f; // 项目重力的精灵倍率。
+	float mass_value = 1.0f; // 力和冲量换算速度时使用的质量，始终保持为正数。
+	float drag_value = 0.0f; // 动态模式的速度阻尼系数。
+	float friction_value = 300.0f; // 接触地面时向零速度收敛的摩擦量。
+	Vector2 external_forces = Vector2(); // 持续生效的外力合量，由 add_force 累加。
+	Vector2 pending_impulse = Vector2(); // 下一物理帧一次性消费的冲量合量。
+	float _gravity = 980.0f; // Godot 项目默认 2D 重力的缓存值，单位为像素/秒平方。
 
 	// 功能开关和角色类型。
-	bool _is_collision_enabled = true;
-	bool _is_trigger_enabled = true;
-	bool debug_collision_visible = true;
-	bool use_default_frames = false;
-	bool enable_dynamic_frame_offset = true;
-	bool is_backdrop = false;
+	bool _is_collision_enabled = true; // Go 侧请求的实体碰撞开关。
+	bool _is_trigger_enabled = true; // Go 侧请求的 Area2D 触发器开关。
+	bool debug_collision_visible = true; // 是否绘制模块自建的碰撞轮廓覆盖层。
+	bool use_default_frames = false; // 场景资源是否优先使用自身 SpriteFrames。
+	bool enable_dynamic_frame_offset = true; // 是否按当前动画帧元数据动态修正轴心。
+	bool is_backdrop = false; // 背景节点不向 Go 上报普通精灵触发事件。
 
 	// 素材基础偏移与 Go 设置的渲染缩放。
-	Vector2 base_offset = Vector2(0, 0);
-	Vector2 _render_scale = Vector2(1.0f, 1.0f);
+	Vector2 base_offset = Vector2(0, 0); // 服装基础轴心偏移，不包含逐帧偏移。
+	Vector2 _render_scale = Vector2(1.0f, 1.0f); // Go 服装缩放，与 Node2D 逻辑缩放分开保存。
 
 	// 可重载视觉资源的逻辑来源及当前播放速度。
-	String spx_type_name;
-	VisualSource visual_source;
-	Ref<SpriteFrames> source_sprite_frames;
-	float playback_speed = 1.0f;
+	String spx_type_name; // Go 精灵类型名，用于拼接动态动画键。
+	VisualSource visual_source; // 当前已提交的视觉来源。
+	Ref<SpriteFrames> source_sprite_frames; // 当前视觉对应的共享源帧，Ref 负责资源寿命。
+	float playback_speed = 1.0f; // 最近一次 play 的基础速度，切换动画时恢复播放方向。
 
 	// 节点初始资源，切换资源失败或恢复默认外观时使用。
-	Ref<SpriteFrames> default_sprite_frames;
-	Ref<ShaderMaterial> default_material;
+	Ref<SpriteFrames> default_sprite_frames; // 场景初始帧资源或模块创建的空帧资源。
+	Ref<ShaderMaterial> default_material; // 首次初始化后的默认材质，供 Shader 切换时复用。
 
 	// 运行时创建或绑定的 Godot 子节点组件。
-	Area2D *area2d = nullptr;
-	CollisionShape2D *trigger2d = nullptr;
-	CollisionShape2D *collider2d = nullptr;
-	VisibleOnScreenNotifier2D *visible_notifier = nullptr;
-	AnimatedSprite2D *anim2d = nullptr;
-	Node2D *render_root = nullptr;
+	// 以下均为场景树拥有的借用裸指针，只能在 Godot 主线程且节点仍在树中时访问。
+	Area2D *area2d = nullptr; // 触发器容器，产生 area_entered/area_exited 信号。
+	CollisionShape2D *trigger2d = nullptr; // Area2D 下的感应形状，不产生实体阻挡。
+	CollisionShape2D *collider2d = nullptr; // CharacterBody2D 下的实体碰撞形状。
+	VisibleOnScreenNotifier2D *visible_notifier = nullptr; // 屏幕进出事件源。
+	AnimatedSprite2D *anim2d = nullptr; // 当前服装/动画的实际绘制节点。
+	Node2D *render_root = nullptr; // 将视觉轴心变换与物理主体变换隔离的容器节点。
 };
 
 template <typename T>

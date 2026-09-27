@@ -5,13 +5,14 @@
 #include "scene/resources/bit_map.h"
 #include "scene/resources/image_texture.h"
 
-// Keep uploaded pixels on the CPU for all Texture2D consumers, including
-// collision queries, atlas extraction and tile copies. Ownership follows the
-// texture; no global cache or resource metadata is needed.
+// 带 CPU 像素快照的 ImageTexture，供像素碰撞、图集切片和瓦片复制读取。
+// 直接调用方是 SpxResMgr/SpxSvgCache；顶层需求来自 Go 的服装加载、颜色感知和地图系统。
+// Godot 规则：Ref 管理 Resource 引用计数；本类不进场景树，也不需要调用 queue_free()。
+// CPU 数据随纹理实例所有，不依赖全局缓存或 Resource 元数据。
 class SpxImageTexture : public ImageTexture {
-	mutable Ref<Image> cpu_image;
-	mutable Ref<BitMap> cpu_alpha_cache;
-	bool uploading_image = false;
+	mutable Ref<Image> cpu_image; // 最近一次上传的 CPU 图像；mutable 允许 const get_image 惰性补齐。
+	mutable Ref<BitMap> cpu_alpha_cache; // 按需生成的 alpha 位图，加速 is_pixel_opaque。
+	bool uploading_image = false; // 模块主动上传期间抑制 changed 信号清空 cpu_image。
 
 	void _invalidate_image() {
 		if (!uploading_image) {
@@ -29,6 +30,7 @@ class SpxImageTexture : public ImageTexture {
 
 public:
 	SpxImageTexture() {
+		// Godot Resource 内容变化会发出 changed；外部修改时让 CPU 快照失效。
 		connect("changed", callable_mp(this, &SpxImageTexture::_invalidate_image));
 	}
 
@@ -42,8 +44,8 @@ public:
 
 	static void replace_image(const Ref<ImageTexture> &p_texture, const Ref<Image> &p_image) {
 		ERR_FAIL_COND(p_texture.is_null() || p_image.is_null() || p_image->is_empty());
-		// This private subclass intentionally has no GDCLASS. RTTI distinguishes
-		// it from ordinary ImageTexture resources without an unsafe Godot cast.
+		// 此私有资源子类有意不声明 GDCLASS；使用 C++ RTTI 区分普通 ImageTexture，
+		// 避免对未注册 Godot 类型做不安全的 Object::cast_to。
 		if (SpxImageTexture *texture = dynamic_cast<SpxImageTexture *>(p_texture.ptr())) {
 			texture->_replace_image(p_image);
 		} else {
@@ -71,13 +73,12 @@ public:
 	}
 
 	Ref<Image> get_image() const override {
-		// Inherited mutations outside the SPX upload path invalidate the snapshot.
-		// SPX reloads retain uploaded pixels directly, including with Dummy rendering.
+		// SPX 上传路径之外的继承接口修改会使快照失效；即使 Dummy 渲染后端无法回读 GPU，
+		// SPX 热重载仍直接保留已上传的 CPU 像素。
 		if (cpu_image.is_null()) {
 			cpu_image = ImageTexture::get_image();
 		}
-		// Image::duplicate shares pixel storage until a caller writes to it.
-		// Preserve get_image's independent, mutable result without copying pixels.
+		// Image::duplicate 在写入前共享像素存储，以低成本保持 get_image 返回值可独立修改。
 		return cpu_image.is_valid() ? Ref<Image>(cpu_image->duplicate()) : Ref<Image>();
 	}
 };

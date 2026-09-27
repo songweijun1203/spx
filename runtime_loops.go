@@ -33,6 +33,9 @@ func (p *Game) initEventLoop() {
 }
 
 func (p *Game) eventLoop(coroutine.Thread) {
+	// eventLoop 是初始化时创建的长期协程。它逐个等待 Game.events：
+	// 通道为空时通过 WaitForChan 挂起并释放脚本执行权；收到事件后恢复，
+	// 调用 handleEvent 完成本次高层事件路由，然后再等待下一个事件。
 	coreruntime.RunEventLoop(p.events, p.handleEvent)
 }
 
@@ -76,9 +79,9 @@ func (p *Game) inputEventLoop(coroutine.Thread) {
 		// 实时模式下鼠标移动直接更新 inputMgr，不包装成 Game.events。
 		// 输入回放模式会使用另一套配置，把移动封装为 eventMouseMove。
 		OnMouseMove: p.inputMgr.onMouseMove,
-		// 取出本帧开始时由 onUpdate() 从 keyInput.pending 转入 ready 的
-		// 键盘边沿事件。RunInputLoop 会遍历这些事件，但当前高层脚本只对
-		// IsPressed=true 的事件生成 eventKeyDown。
+		// 取出本帧开始时由 onUpdate() 从 keyInput.pending 转入 ready 的键盘边沿；
+		// GetKeyEvents 会清空 ready。RunInputLoop 遍历后只对 IsPressed=true 的事件
+		// 生成 eventKeyDown，再由 eventLoop 分发给脚本 OnKey 处理器。
 		GetKeyEvents: engine.GetKeyEvents,
 		// 对每个刚按下的键构造 eventKeyDown，并写入 Game.events。
 		// eventLoop 消费该事件后，才会调用脚本事件系统中的 OnKey 处理器。

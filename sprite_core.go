@@ -25,10 +25,12 @@ import (
 	spxlog "github.com/goplus/spx/v3/internal/log"
 )
 
-// SpriteImpl is the concrete implementation of the Sprite interface.
+// SpriteImpl 是根包 spx.Sprite 接口的具体游戏逻辑实现。
+// 它被项目生成的精灵结构体嵌入；对应的 Godot 同步代理不在这里直接保存，
+// 而是位于 baseObj.runtimeState.SyncSprite（*internal/engine.Sprite）。
 type SpriteImpl struct {
 	baseObj
-	scriptEventBindings
+	scriptEventBindings //脚本事件绑定
 
 	sprite      Sprite
 	original    *SpriteImpl
@@ -55,6 +57,13 @@ func (p *SpriteImpl) IsCloned() bool {
 	return p.spriteState.Cloned
 }
 
+// InitFrom 把源精灵的运行时基础状态复制到一个新 SpriteImpl，并重建克隆私有状态。
+//
+// 直接调用方：cloneSprite 通过反射查找生成精灵内嵌字段的 InitFrom 方法；总体流程
+// 调用方：运行时 Clone。事件 registry 与源精灵共享，但 owner 改为新精灵，因此重跑
+// Main 后产生的是克隆自己的 Sink；HasOnCloned 等“是否已注册”标志必须先清零。
+// out.Set 的浅复制会暂时带入源 Godot 代理引用，随后 initRuntimeProxy 会将其清空并
+// 新建独立代理，绝不能让原精灵和克隆体共同控制一个 SpxSprite 节点。
 func (p *SpriteImpl) InitFrom(src *SpriteImpl) {
 	p.baseObj.initFrom(&src.baseObj)
 	p.scriptEventBindings.bind(src.scriptEventRegistry, p)
@@ -127,7 +136,7 @@ func (p *SpriteImpl) init(
 	p.initBaseObjects(spriteCfg, g)
 	p.initBasicProperties(g, name, sprite, gamer, spriteCfg)
 	p.initComponents(spriteCfg)
-	p.initRuntimeProxy()
+	p.initRuntimeProxy() //创建 Godot 代理节点
 }
 
 func (p *SpriteImpl) initBaseObjects(spriteCfg *coreproject.SpriteConfig, g *Game) {

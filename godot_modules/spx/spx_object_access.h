@@ -35,8 +35,10 @@
 #include "core/string/ustring.h"
 #include "gdextension_spx_ext.h"
 
-// Validate before looking up scene-owned state. The returned pointer is borrowed
-// for the current main-thread operation; this helper acquires no lock or lifetime.
+// 场景对象统一安全查找器。
+// 查找前验证 Godot 主线程和 Manager 有效性；返回指针仅借用于当前调用，不加锁、
+// 不延长对象生命周期，也不能跨 reset/帧保存。
+// 直接调用方：下方 Sprite/UI/Audio 查找宏；顶层调用方：Go 侧对象属性与动作 API。
 template <typename T, typename Mgr, typename Getter>
 T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter p_getter) {
 	if (unlikely(!Thread::is_main_thread())) {
@@ -53,7 +55,10 @@ T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter 
 	return object;
 }
 
-// Checked lookups retain each call site's default return value.
+// 以下宏统一“查找失败即提前返回”的样板代码，并保留每个调用点自己的默认返回值。
+// `this` 必须是相应 Manager/对象包装器；宏得到的局部指针只在当前主线程函数内有效。
+
+// 查找 SpxSprite，失败时从 void 函数返回；直接调用方：SpxSpriteMgr 的 SPX_BIND 方法。
 #define SPX_SPRITE_LOOKUP_VOID(obj, context_name)                              \
 	SpxSprite *sprite = spx_checked_lookup<SpxSprite>(obj, context_name, this, \
 			[](SpxSpriteMgr *mgr, GdObj id) { return mgr->get_sprite(id); });  \
@@ -61,6 +66,7 @@ T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter 
 		return;                                                                \
 	}
 
+// 查找 SpxSprite，失败时返回指定默认值。
 #define SPX_SPRITE_LOOKUP_RETURN(obj, context_name, return_val)                \
 	SpxSprite *sprite = spx_checked_lookup<SpxSprite>(obj, context_name, this, \
 			[](SpxSpriteMgr *mgr, GdObj id) { return mgr->get_sprite(id); });  \
@@ -68,6 +74,7 @@ T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter 
 		return return_val;                                                     \
 	}
 
+// 查找作为目标参数传入的另一精灵，局部变量名固定为 sprite_target。
 #define SPX_TARGET_SPRITE_LOOKUP_VOID(target_obj, context_name)                              \
 	SpxSprite *sprite_target = spx_checked_lookup<SpxSprite>(target_obj, context_name, this, \
 			[](SpxSpriteMgr *mgr, GdObj id) { return mgr->get_sprite(id); });                \
@@ -82,6 +89,7 @@ T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter 
 		return return_val;                                                                   \
 	}
 
+// 查找 SpxUi 包装对象；直接调用方：SpxUiMgr 的 SPX_BIND 方法。
 #define SPX_UI_LOOKUP_VOID(obj, context_name)                           \
 	SpxUi *node = spx_checked_lookup<SpxUi>(obj, context_name, this,    \
 			[](SpxUiMgr *mgr, GdObj id) { return mgr->get_node(id); }); \
@@ -96,6 +104,7 @@ T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter 
 		return return_val;                                              \
 	}
 
+// 查找一次音频播放实例；直接调用方：SpxAudio 的播放控制方法。
 #define SPX_AUDIO_LOOKUP_VOID(aid, context_name)                                                  \
 	AudioStreamPlayer2D *audio = spx_checked_lookup<AudioStreamPlayer2D>(aid, context_name, this, \
 			[](SpxAudio *mgr, GdInt audio_id) { return mgr->_get_aid_audio(audio_id); });         \
@@ -110,6 +119,7 @@ T *spx_checked_lookup(GdObj p_id, const char *p_context, Mgr *p_manager, Getter 
 		return return_val;                                                                        \
 	}
 
+// 从 SpxUi 包装器取得实际 Godot Control；ID 参数无意义，因此固定传 0。
 #define SPX_UI_CONTROL_LOOKUP_VOID(context_name)                       \
 	Control *node = spx_checked_lookup<Control>(0, context_name, this, \
 			[](SpxUi *ui, GdInt) { return ui->get_control_item(); });  \

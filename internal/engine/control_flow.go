@@ -127,6 +127,9 @@ func RequestRedraw() {
 	}
 }
 
+// WaitForChan 是 engine 层对全局协程管理器 gco 的适配入口。
+// eventLoop 等运行时协程通过它等待通道，同时把具体的挂起、取消和恢复机制
+// 留在 internal/coroutine 包内实现。
 func WaitForChan[T any](ch <-chan T) T {
 	return coroutine.WaitForChan(gco, ch)
 }

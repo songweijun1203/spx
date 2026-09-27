@@ -38,7 +38,7 @@
 #include "spx_res_mgr.h"
 
 // ============================================================================
-// Lifecycle Methods
+// 生命周期入口。直接调用方：SpxEngine；顶层调用方：Go runtime 的重置/销毁流程。
 // ============================================================================
 
 void SpxTilemapparserMgr::on_destroy() {
@@ -52,30 +52,28 @@ void SpxTilemapparserMgr::on_reset(int reset_code) {
 }
 
 // ============================================================================
-// Main API
+// 对外接口。直接调用方：生成的 SPX ABI；顶层调用方：Go TilemapParser API。
 // ============================================================================
 
 void SpxTilemapparserMgr::load_tilemap(GdString json_path) {
 	String path = SpxStr(json_path);
 	String engine_path = resMgr->_to_engine_path(path);
 
-	// Stage 1: Parse JSON -> Data Structure (handled by SpxTileMapData)
+	// 第一阶段：JSON -> 与引擎对象解耦的数据结构，由 SpxTileMapData 负责。
 	SpxTileMapData data;
 	if (!SpxTileMapData::parse_from_file(engine_path, data)) {
 		print_error("SpxTilemapparserMgr: Failed to parse tilemap JSON: " + engine_path);
 		return;
 	}
 
-	// Get tilemap name from JSON, or derive from path
-	// Priority: 1. JSON name field  2. Parent directory name  3. Filename basename
+	// 地图名优先级：JSON name、父目录名、文件基础名；该名字也是缓存键。
 	String tilemap_name = data.name;
 	if (tilemap_name.is_empty()) {
-		// Use parent directory name as tilemap name
-		// e.g., "tilemaps/map2/tilemap.json" -> "map2"
+		// 例如 "tilemaps/map2/tilemap.json" 推导为 "map2"。
 		String dir_path = path.get_base_dir();
 		tilemap_name = dir_path.get_file();
 		if (tilemap_name.is_empty()) {
-			// Fallback to filename basename if no parent directory
+			// 没有父目录时退回文件基础名。
 			tilemap_name = path.get_file().get_basename();
 		}
 	}
@@ -85,10 +83,10 @@ void SpxTilemapparserMgr::load_tilemap(GdString json_path) {
 		return;
 	}
 
-	// Get base path for relative texture paths
+	// 纹理路径相对 JSON 所在目录解析。
 	String base_path = _get_base_path(engine_path);
 
-	// Stage 2: Data Structure -> Godot Objects (handled by this manager)
+	// 第二阶段：数据结构 -> Godot TileSet/TileMapLayer，由本 Manager 负责。
 	Ref<TileSet> tileset = _create_tileset(data.tileset, base_path);
 	if (tileset.is_null()) {
 		print_error("SpxTilemapparserMgr: Failed to create TileSet for: " + tilemap_name);
@@ -103,6 +101,7 @@ void SpxTilemapparserMgr::load_tilemap(GdString json_path) {
 		if (layer != nullptr) {
 			Node *spx_root = get_spx_root();
 			if (spx_root != nullptr) {
+				// Godot 规则：只有挂入 SceneTree 的 Node 才参与渲染、物理与生命周期通知。
 				spx_root->add_child(layer);
 			}
 			layers.push_back(layer);
@@ -119,6 +118,7 @@ void SpxTilemapparserMgr::unload_tilemap(GdString name) {
 		Vector<TileMapLayer *> &layers = tilemap_layers[tilemap_name];
 		for (TileMapLayer *layer : layers) {
 			if (layer != nullptr) {
+				// Godot 规则：遍历场景树期间不能立即 delete Node，使用 queue_free 延迟释放。
 				layer->queue_free();
 			}
 		}
@@ -141,7 +141,7 @@ void SpxTilemapparserMgr::destroy_all_tilemaps() {
 }
 
 // ============================================================================
-// Query API
+// 查询接口。直接调用方：SPX ABI；顶层调用方：Go 侧地图存在性与层数查询。
 // ============================================================================
 
 GdBool SpxTilemapparserMgr::has_tilemap(GdString name) {
@@ -158,7 +158,7 @@ GdInt SpxTilemapparserMgr::get_tilemap_layer_count(GdString name) {
 }
 
 // ============================================================================
-// Helper Methods
+// 纯辅助方法，只由本类加载流程直接调用。
 // ============================================================================
 
 String SpxTilemapparserMgr::_get_base_path(const String &json_path) {
@@ -186,7 +186,7 @@ Vector<uint8_t> SpxTilemapparserMgr::_base64_decode(const String &base64_str) {
 }
 
 // ============================================================================
-// Godot Object Creation Methods
+// Godot 对象构建阶段，只由 load_tilemap 的第二阶段直接调用。
 // ============================================================================
 
 Ref<TileSet> SpxTilemapparserMgr::_create_tileset(const SpxTileSetData &data, const String &base_path) {
@@ -210,19 +210,19 @@ Ref<TileSet> SpxTilemapparserMgr::_create_tileset(const SpxTileSetData &data, co
 }
 
 void SpxTilemapparserMgr::_create_atlas_source(Ref<TileSet> tileset, const SpxTileSetSourceData &data, const String &base_path) {
-	// Only support "atlas" type
+	// 当前 SPX 文件协议只支持 atlas 类型 source。
 	if (data.type != "atlas") {
 		print_line("SpxTilemapparserMgr: Skipping non-atlas source type: " + data.type);
 		return;
 	}
 
-	// Load texture using SPX resource manager (direct loading)
+	// 经 SPX 资源管理器加载，以兼容虚拟资源路径和平台差异。
 	if (data.texture.is_empty()) {
 		print_error("SpxTilemapparserMgr: Source " + itos(data.id) + " has no texture");
 		return;
 	}
 
-	// Resolve relative path
+	// 将 JSON 中的相对纹理路径解析为引擎路径。
 	String full_texture_path = base_path.is_empty() ? data.texture : base_path.path_join(data.texture);
 	Ref<Texture2D> texture = resMgr->load_texture(full_texture_path, true);
 	if (texture.is_null()) {
@@ -237,12 +237,12 @@ void SpxTilemapparserMgr::_create_atlas_source(Ref<TileSet> tileset, const SpxTi
 	atlas->set_margins(data.margins);
 	atlas->set_separation(data.separation);
 
-	// Add source to tileset FIRST - this is required so that TileData can access
-	// the TileSet's physics layers configuration. When add_source is called,
-	// it triggers set_tile_set() which initializes the physics array in TileData.
+	// Godot 规则：必须先 add_source，使 atlas 获得所属 TileSet，并按 TileSet 的物理层
+	// 初始化 TileData 内部数组；若先 create_tile，随后写碰撞层会访问到未初始化状态。
 	tileset->add_source(atlas, data.id);
 
-	// Create tiles (now TileData will have correct physics layer count)
+	// 此时创建的 TileData 已拥有正确的物理层数量；返回的 TileData* 归 atlas 所有，
+	// 这里只在 source 存活期间临时借用，不能自行释放。
 	for (int i = 0; i < data.tiles.size(); i++) {
 		const SpxTileData &tile_data = data.tiles[i];
 
@@ -263,7 +263,7 @@ void SpxTilemapparserMgr::_setup_tile_physics(TileData *tile_data, const SpxTile
 		for (int p = 0; p < phys_data.polygons.size(); p++) {
 			const Vector<float> &polygon_flat = phys_data.polygons[p];
 
-			// Convert flat array to Vector<Vector2>
+			// 文件协议用 [x0,y0,x1,y1,...]；Godot 碰撞接口需要 Vector<Vector2>。
 			Vector<Vector2> polygon;
 			int point_count = polygon_flat.size() / 2;
 			polygon.resize(point_count);
@@ -272,7 +272,7 @@ void SpxTilemapparserMgr::_setup_tile_physics(TileData *tile_data, const SpxTile
 			}
 
 			if (polygon.size() >= 3) {
-				// Ensure enough polygons exist
+				// Godot 要求先创建对应序号的碰撞多边形，才能设置其点集。
 				while (tile_data->get_collision_polygons_count(layer_id) <= p) {
 					tile_data->add_collision_polygon(layer_id);
 				}
@@ -283,18 +283,19 @@ void SpxTilemapparserMgr::_setup_tile_physics(TileData *tile_data, const SpxTile
 }
 
 TileMapLayer *SpxTilemapparserMgr::_create_tilemap_layer(const SpxTileMapLayerData &data, Ref<TileSet> tileset, const Vector2 &node_offset) {
+	// 返回尚未挂树的新 Node；调用方必须通过 add_child 将所有权转交父节点/SceneTree。
 	TileMapLayer *layer = memnew(TileMapLayer);
 
 	layer->set_name(data.name.is_empty() ? "layer" : data.name);
 	layer->set_z_index(data.z_index);
 
-	// Set offset (position) - combine layer offset with tilemap node offset for centering
+	// 将图层偏移与地图整体偏移合并，保持导出时的居中位置。
 	layer->set_position(data.offset + node_offset);
 
 	layer->set_enabled(data.enabled);
 	layer->set_tile_set(tileset);
 
-	// Parse tile_map_data (Base64 encoded binary data)
+	// tile_map_data 是 Godot TileMapLayer 原生二进制数据的 Base64 表示。
 	if (!data.tile_map_data_base64.is_empty()) {
 		Vector<uint8_t> bytes = _base64_decode(data.tile_map_data_base64);
 		if (bytes.size() > 0) {

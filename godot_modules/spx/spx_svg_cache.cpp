@@ -15,7 +15,7 @@ int SpxSvgCache::raster_scale(Vector2 p_required_scale) {
 
 int SpxSvgCache::raster_scale(float p_required_scale) {
 	const float required_scale = Math::abs(p_required_scale);
-	// Scratch SVG MIP levels, capped at the largest supported raster scale.
+	// 使用 Scratch 风格的 SVG MIP 倍率，并限制在支持的最大栅格倍率内。
 	int scale = 1;
 	while (float(scale) < required_scale && scale < 1024) {
 		scale <<= 1;
@@ -24,6 +24,8 @@ int SpxSvgCache::raster_scale(float p_required_scale) {
 }
 
 Ref<ImageTexture> SpxSvgCache::load_image(const String &p_path, int p_scale) {
+	// 直接调用方：SpxResMgr::load_svg_texture；顶层来自 Go 服装/纹理切换。
+	// 每个倍率单独缓存，避免高分辨率显示时反复栅格化或低倍率放大模糊。
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), Ref<ImageTexture>(), "SVG caches may only be accessed on the main thread.");
 	ERR_FAIL_COND_V(p_scale < 1 || !is_svg_path(p_path), Ref<ImageTexture>());
 	const auto *scales = images.getptr(p_path);
@@ -45,6 +47,7 @@ Ref<ImageTexture> SpxSvgCache::load_image(const String &p_path, int p_scale) {
 }
 
 Ref<ImageTexture> SpxSvgCache::reload_image(const String &p_path) {
+	// 对每个已缓存倍率原位更新纹理，现有节点持有的 Ref 无需重新绑定。
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), Ref<ImageTexture>(), "SVG caches may only be accessed on the main thread.");
 	HashMap<int, Ref<Image>> prepared;
 	prepared.insert(1, Ref<Image>());
@@ -61,7 +64,7 @@ Ref<ImageTexture> SpxSvgCache::reload_image(const String &p_path) {
 			return old != nullptr ? *old : Ref<ImageTexture>();
 		}
 	}
-	// Publish every scale together, retaining texture identity for sprites and clips.
+	// 一次发布所有已缓存倍率，并为精灵和动画片段保持纹理对象身份不变。
 	for (const auto &entry : prepared) {
 		auto &cached_scales = images[p_path];
 		Ref<ImageTexture> *texture = cached_scales.getptr(entry.key);
@@ -77,6 +80,7 @@ Ref<ImageTexture> SpxSvgCache::reload_image(const String &p_path) {
 }
 
 Ref<SpriteFrames> SpxSvgCache::load_animation(const String &p_key, const Ref<SpriteFrames> &p_source, const Vector<int> &p_frame_scales, int p_scale) {
+	// 直接调用方：SpxResMgr::get_animation_frames；顶层来自 SpxSprite 的 SVG 动画缩放。
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), Ref<SpriteFrames>(), "SVG caches may only be accessed on the main thread.");
 	ERR_FAIL_COND_V(p_scale < 1 || p_source.is_null() || !p_source->has_animation(p_key), Ref<SpriteFrames>());
 	const int frame_count = p_source->get_frame_count(p_key);
@@ -97,8 +101,7 @@ Ref<SpriteFrames> SpxSvgCache::load_animation(const String &p_key, const Ref<Spr
 	for (int i = 0; i < frame_count; i++) {
 		const Ref<Texture2D> source_texture = p_source->get_frame_texture(p_key, i);
 		ERR_FAIL_COND_V(source_texture.is_null(), Ref<SpriteFrames>());
-		// Resolve even the 1x clip through the image cache so invalidation also
-		// replaces SVG pixels retained by the original animation metadata.
+		// 即使 1 倍动画也通过图片缓存解析，使失效操作能替换原动画元数据持有的 SVG 像素。
 		const Ref<ImageTexture> texture = load_image(source_texture->get_path(), p_scale * p_frame_scales[i]);
 		if (texture.is_null()) {
 			return Ref<SpriteFrames>();
@@ -113,7 +116,7 @@ void SpxSvgCache::invalidate_image(const String &p_path) {
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "SVG caches may only be accessed on the main thread.");
 	if (is_svg_path(p_path)) {
 		images.erase(p_path);
-		// A clip can use the changed image at any raster scale.
+		// 同一动画片段可能在任意栅格倍率使用发生变化的图片。
 		animations.clear();
 	}
 }

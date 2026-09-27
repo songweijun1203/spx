@@ -43,16 +43,36 @@ type InputFrameHooks struct {
 }
 
 type InputLoopConfig struct {
-	BeginFrame             func() bool
-	EndFrame               func()
-	CurrentMousePos        func() mathf.Vec2
-	IsLeftButtonPressed    func() bool
-	FireLeftButtonDown     func(mathf.Vec2)
-	FireLeftButtonUp       func(mathf.Vec2)
-	SetMousePos            func(mathf.Vec2)
-	OnMouseMove            func(mathf.Vec2)
-	GetKeyEvents           func([]engine.KeyEvent) []engine.KeyEvent
-	OnKeyPressed           func(int64)
+	// BeginFrame 在每轮采样前调用。返回 false 表示本轮输入由其他会话
+	// （例如回放）接管；循环会跳过采样，等待下一帧，并在恢复时只同步状态，
+	// 不伪造按键、鼠标按下/抬起或移动事件。
+	BeginFrame func() bool
+	// EndFrame 在一轮输入处理结束后调用，即使处理过程发生 panic 也会执行。
+	// 通常用于提交或释放本轮输入会话的资源。
+	EndFrame func()
+	// CurrentMousePos 返回当前帧的鼠标位置。RunInputLoop 每轮都会先读取它，
+	// 再交给 SetMousePos 和 ProcessInputFrame。
+	CurrentMousePos func() mathf.Vec2
+	// IsLeftButtonPressed 返回当前帧左键是否处于按下状态；它与上一帧状态比较后，
+	// 才会决定是否触发 FireLeftButtonDown 或 FireLeftButtonUp。
+	IsLeftButtonPressed func() bool
+	// FireLeftButtonDown 处理左键从未按下变为按下的边沿事件。
+	FireLeftButtonDown func(mathf.Vec2)
+	// FireLeftButtonUp 处理左键从按下变为未按下的边沿事件。
+	FireLeftButtonUp func(mathf.Vec2)
+	// SetMousePos 把本轮采样到的鼠标位置写入上层输入状态；每轮至少调用一次，
+	// 鼠标移动超过阈值时还会再次调用。
+	SetMousePos func(mathf.Vec2)
+	// OnMouseMove 处理鼠标位置变化事件。只有 X 或 Y 方向的位移绝对值超过
+	// MouseMovementThreshold 时才会调用。
+	OnMouseMove func(mathf.Vec2)
+	// GetKeyEvents 取出当前帧的键盘边沿事件，并可复用传入切片的底层数组，
+	// 以减少每帧分配。
+	GetKeyEvents func([]engine.KeyEvent) []engine.KeyEvent
+	// OnKeyPressed 处理当前帧每个刚按下的键；释放事件不会在该输入循环中投递。
+	OnKeyPressed func(int64)
+	// MouseMovementThreshold 是鼠标移动触发阈值，单位与鼠标坐标相同。
+	// 当 abs(dx) > threshold 或 abs(dy) > threshold 时，才触发 OnMouseMove。
 	MouseMovementThreshold float64
 }
 
@@ -86,6 +106,8 @@ type LogicLoopConfig[T any] struct {
 
 func RunEventLoop[T any](events chan T, handle func(T)) {
 	for {
+		// WaitForChan 返回前不会调用 handle，因此同一个 eventLoop 按通道接收顺序
+		// 串行处理事件。等待通道不使用 WaitJob，也不要求下一次 gco.Update 才能唤醒。
 		handle(engine.WaitForChan(events))
 	}
 }

@@ -2,5 +2,5 @@
 
 package coroutine
 
-// Direct-platform waits park so host callbacks can run.
+// Web/pure 平台不需要 native 主线程任务泵；等待时由宿主回调继续推进。
 const hasMainThreadQueue = false

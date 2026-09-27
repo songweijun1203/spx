@@ -17,15 +17,15 @@
 package engine
 
 const (
-	// VisualFieldsPerSprite is the number of float32 fields per sprite in the visual buffer
-	// [spriteId, renderScaleX, renderScaleY, zIndex, flags, uvX, uvY, uvW, uvH]
+	// VisualFieldsPerSprite 是视觉批次中每个精灵占用的字段数：
+	// [spriteId, renderScaleX, renderScaleY, zIndex, flags, uvX, uvY, uvW, uvH]。
 	VisualFieldsPerSprite = 9
 
 	VisualFlagHasZIndex  = 1 // bit 0: apply SetZIndex
 	VisualFlagHasUvRemap = 2 // bit 1: apply SetMaterialParamsVec4 for UV remap
 )
 
-// VisualSyncData represents the visual data to sync for a single sprite
+// VisualSyncData 保存与世界变换分开的视觉属性，例如渲染缩放、Z 序和图集 UV。
 type VisualSyncData struct {
 	SpriteID    int64
 	RenderScale float32
@@ -34,13 +34,14 @@ type VisualSyncData struct {
 	UvRemap     [4]float32 // x, y, w, h (UV remap for atlas textures)
 }
 
-// VisualSyncBuffer collects visual sync data for batch processing
+// VisualSyncBuffer 收集视觉属性，格式与 SpriteSyncBuffer 类似但没有删除段。
+// 当前常规服装更新仍主要走逐精灵接口；该缓冲区是独立的批量桥接能力。
 type VisualSyncBuffer struct {
 	data       []VisualSyncData
 	serialized []float32
 }
 
-// AddRenderScale adds a render scale update to the buffer
+// AddRenderScale 追加仅渲染缩放更新。
 func (b *VisualSyncBuffer) AddRenderScale(id int64, renderScale float64) {
 	b.data = append(b.data, VisualSyncData{
 		SpriteID:    id,
@@ -48,7 +49,7 @@ func (b *VisualSyncBuffer) AddRenderScale(id int64, renderScale float64) {
 	})
 }
 
-// AddFull adds a full visual update (render scale + optional zIndex + optional UV remap)
+// AddFull 追加完整视觉更新，可选择附带 Z 序和图集 UV 重映射。
 func (b *VisualSyncBuffer) AddFull(id int64, renderScale float64, zIndex int, hasZIndex bool, uvRemap [4]float64, hasUvRemap bool) {
 	entry := VisualSyncData{
 		SpriteID:    id,
@@ -68,19 +69,19 @@ func (b *VisualSyncBuffer) AddFull(id int64, renderScale float64, zIndex int, ha
 	b.data = append(b.data, entry)
 }
 
-// Clear resets the buffer for reuse
+// Clear 清空本轮视觉更新并保留容量。
 func (b *VisualSyncBuffer) Clear() {
 	b.data = b.data[:0]
 }
 
-// Count returns the number of visual updates in the buffer
+// Count 返回本轮视觉更新数量。
 func (b *VisualSyncBuffer) Count() int {
 	return len(b.data)
 }
 
-// Serialize converts the buffer to a flat float32 array for FFI
-// Format: [count, entry0..., entry1..., ...]
-// Each entry: [spriteId, renderScaleX, renderScaleY, zIndex, flags, uvX, uvY, uvW, uvH]
+// Serialize 将视觉更新编码成 FFI 一维数组：
+// [count, entry0..., entry1...]，每条 entry 为
+// [spriteId, renderScaleX, renderScaleY, zIndex, flags, uvX, uvY, uvW, uvH]。
 // Panics before returning a packet if an ID is negative or cannot be represented
 // exactly in the legacy float32 format.
 func (b *VisualSyncBuffer) Serialize() []float32 {
@@ -114,7 +115,7 @@ func (b *VisualSyncBuffer) Serialize() []float32 {
 	return result[:totalSize:totalSize]
 }
 
-// NewVisualSyncBuffer creates a new visual sync buffer
+// NewVisualSyncBuffer 创建可复用的视觉同步缓冲区。
 func NewVisualSyncBuffer(capacity int) *VisualSyncBuffer {
 	return &VisualSyncBuffer{
 		data:       make([]VisualSyncData, 0, capacity),
@@ -122,7 +123,7 @@ func NewVisualSyncBuffer(capacity int) *VisualSyncBuffer {
 	}
 }
 
-// SyncBatchUpdateVisuals sends batch visual updates to Godot via a single FFI call
+// SyncBatchUpdateVisuals 是独立的 Go -> Godot 视觉批次同步边界。
 func SyncBatchUpdateVisuals(buffer []float32) {
 	if len(buffer) == 0 {
 		return

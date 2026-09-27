@@ -74,14 +74,22 @@ func withEventRegistrationBarrier(owner any, dispatch func()) {
 	gco.Join(dispatcher)
 }
 
+// globalSinks 返回指定事件桶的稳定快照，并按当前舞台精灵的前后顺序整理 owner。
+// 快照保证匹配期间注册/删除处理器不会修改本次派发的数据。
 func (p *scriptEventRegistry) globalSinks(bucket coreevent.Bucket) []eventSink {
 	return sinksInScratchTargetOrder(p.game, p.manager.Snapshot(bucket))
 }
 
+// dispatchGlobal 派发面向全部 owner 的事件，例如 OnTimer、IReceive 和 OnBackdrop。
 func (p *scriptEventRegistry) dispatchGlobal(bucket coreevent.Bucket, event scriptEventDispatch) {
 	p.dispatchSinks(p.globalSinks(bucket), event)
 }
 
+// dispatchTarget 只派发给指定 owner，例如某个精灵的 OnClick、OnSwipe、OnTouchStart
+// 或 OnCloned。
+//
+// 直接调用方：各类 doWhenXxx 定向事件入口；总体流程调用方：输入、物理和克隆等事件
+// 来源。OnCloned 从 dispatchCloneLifecycle 同步进入这里，不经过 Game.events 队列。
 func (p *scriptEventRegistry) dispatchTarget(bucket coreevent.Bucket, owner any, event scriptEventDispatch) {
 	sinks := p.manager.Snapshot(bucket)
 	owned := make([]eventSink, 0, len(sinks))
@@ -93,6 +101,8 @@ func (p *scriptEventRegistry) dispatchTarget(bucket coreevent.Bucket, owner any,
 	p.dispatchSinks(owned, event)
 }
 
+// dispatchSinks 先完成全部条件匹配，再批量创建命中的处理器协程。
+// withEventRegistrationBarrier 保证派发期间的事件注册和生命周期状态已完成登记。
 func (p *scriptEventRegistry) dispatchSinks(sinks []eventSink, event scriptEventDispatch) {
 	withEventRegistrationBarrier(p.game, func() {
 		// Complete matching before starting user handlers.
@@ -101,6 +111,8 @@ func (p *scriptEventRegistry) dispatchSinks(sinks []eventSink, event scriptEvent
 	})
 }
 
+// dispatchStartSinks 是 OnStart 的专用派发入口；启动事件需要额外跟踪
+// 尚未真正运行的线程，以便 reset/StopAll 时正确取消它们。
 func (p *scriptEventRegistry) dispatchStartSinks(sinks []eventSink, event scriptEventDispatch) {
 	withEventRegistrationBarrier(p.game, func() {
 		p.dispatchStartEventBatch(sinks, event)
@@ -221,6 +233,11 @@ func matchingEventSinks(sinks []eventSink, matchData any) []eventSink {
 	return matched
 }
 
+// dispatchMatchedScriptEventBatch 把匹配结果转换为协程任务并按指定 BatchMode 启动。
+//
+// 直接调用方：dispatchSinks、dispatchStartEventBatch；总体流程调用方：全部脚本事件
+// 派发。OnCloned 在这里形成以克隆 SpriteImpl 为 Owner 的独立处理器协程，并使用
+// BatchWaitFirstSlice 作为克隆初始化屏障。
 func dispatchMatchedScriptEventBatch(matched []eventSink, event scriptEventDispatch) {
 	if len(matched) == 0 {
 		return

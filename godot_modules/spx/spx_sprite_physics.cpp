@@ -36,6 +36,7 @@
 #include "spx_physics_mgr.h"
 
 void SpxSprite::set_physics_mode(GdInt p_mode) {
+	// 直接调用方：SpxSpriteMgr/批量物理同步；顶层调用方：Go PhysicsMode API。
 	ERR_FAIL_COND_MSG(p_mode < NO_PHYSICS || p_mode > STATIC, "SpxSprite: invalid physics mode.");
 	physics_mode = static_cast<PhysicsMode>(p_mode);
 	_update_physics_mode();
@@ -110,6 +111,8 @@ void SpxSprite::add_impulse(GdVec2 p_impulse) {
 }
 
 void SpxSprite::_physics_process(double p_delta) {
+	// 直接调用方：Godot NOTIFICATION_PHYSICS_PROCESS；顶层由引擎固定物理时钟驱动。
+	// Godot 规则：CharacterBody2D::move_and_slide 应在物理帧调用，碰撞结果才保持一致。
 	switch (physics_mode) {
 		case DYNAMIC:
 			_handle_dynamic_physics(p_delta);
@@ -132,6 +135,7 @@ void SpxSprite::_physics_process(double p_delta) {
 }
 
 void SpxSprite::_handle_dynamic_physics(double p_delta) {
+	// SPX 动态模式仍基于 CharacterBody2D 手工积分，不把节点交给 RigidBody2D 所有。
 	Vector2 current_velocity = get_velocity();
 
 	if (use_gravity && !is_on_floor()) {
@@ -139,7 +143,7 @@ void SpxSprite::_handle_dynamic_physics(double p_delta) {
 	}
 
 	float safe_mass = Math::is_zero_approx(mass_value) ? 1.0f : mass_value;
-	// An impulse changes momentum once; unlike a force it is not integrated over time.
+	// 冲量只改变一次动量；与力不同，它不随时间积分。
 	current_velocity += pending_impulse / safe_mass;
 	current_velocity += external_forces * p_delta;
 
@@ -175,6 +179,7 @@ void SpxSprite::_handle_no_physics(double p_delta) {
 }
 
 void SpxSprite::_update_physics_mode() {
+	// 切换模式时同步 process 开关和碰撞状态；set_physics_process 控制 Godot 固定帧通知。
 	switch (physics_mode) {
 		case DYNAMIC:
 		case KINEMATIC:

@@ -33,6 +33,10 @@ type baseMgr struct{}
 
 func (pself *baseMgr) OnStart() {}
 
+// OnUpdate 是 Go Manager 代理的普通帧生命周期默认实现。
+// 当前各平台的具体 Manager 都嵌入 baseMgr 且没有覆写此方法，因此
+// gdengine.onEngineUpdate() 遍历 mgrs 时这里实际为空操作。具体的 Godot
+// SpxManager 已由 C++ SpxEngine::on_update() 在回调 Go 之前完成逐帧更新。
 func (pself *baseMgr) OnUpdate(delta float64) {}
 
 func (pself *baseMgr) OnFixedUpdate(delta float64) {}

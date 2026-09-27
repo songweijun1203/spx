@@ -28,6 +28,15 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+/*
+ * Godot Web 音频驱动的 SPX 覆盖版本，由 SCsub 的 WEB_JS_LIBRARY_OVERRIDES
+ * 替换引擎默认同名文件。更新 Godot 版本时应与上游 Web 音频实现逐项对齐。
+ * 直接调用方：Godot Web AudioDriver 的 C++ 导入和 library_godot_recorder.js；
+ * 顶层来源：Godot AudioServer、SPX 声音 API 与浏览器 MediaRecorder。
+ * AudioContext/AudioNode 属于浏览器对象，不在 WASM 线性内存中；线程构建下涉及
+ * WebAudio 的 Emscripten 导入需代理到浏览器主线程，Worklet 则运行在独立音频线程。
+ */
+
 /**
  * @typedef { "disabled" | "forward" | "backward" | "pingpong" } LoopMode
  */

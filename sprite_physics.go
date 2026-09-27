@@ -25,32 +25,34 @@ import (
 	spxlog "github.com/goplus/spx/v3/internal/log"
 )
 
+// PhysicsMode 表示精灵参与物理模拟的方式。
 type PhysicsMode = int64
 
 const (
-	NoPhysics        PhysicsMode = 0 // Pure visual, no collision, best performance (current default) eg: decorators
-	KinematicPhysics PhysicsMode = 1 // Code-controlled movement with collision detection eg: player
-	DynamicPhysics   PhysicsMode = 2 // Affected by physics, automatic gravity and collision eg: items
-	StaticPhysics    PhysicsMode = 3 // Static immovable, but has collision, affects other objects : eg: walls
+	NoPhysics        PhysicsMode = 0 // 仅用于视觉显示，不参与碰撞，性能开销最低（当前默认值）。
+	KinematicPhysics PhysicsMode = 1 // 由代码控制移动，同时进行碰撞检测，例如玩家。
+	DynamicPhysics   PhysicsMode = 2 // 受重力和碰撞影响自动运动，例如可掉落的物品。
+	StaticPhysics    PhysicsMode = 3 // 静止不动但参与碰撞，例如墙壁。
 )
 
+// ColliderShapeType 表示碰撞体或触发器的形状类型。
 type ColliderShapeType = int64
 
 const (
-	RectCollider      ColliderShapeType = ColliderShapeType(physicsColliderRect)
-	CircleCollider    ColliderShapeType = ColliderShapeType(physicsColliderCircle)
-	CapsuleCollider   ColliderShapeType = ColliderShapeType(physicsColliderCapsule)
-	PolygonCollider   ColliderShapeType = ColliderShapeType(physicsColliderPolygon)
-	TriggerExtraPixel float64           = 2.0
+	RectCollider      ColliderShapeType = ColliderShapeType(physicsColliderRect)    // 矩形，参数为[宽, 高]。
+	CircleCollider    ColliderShapeType = ColliderShapeType(physicsColliderCircle)  // 圆形，参数为[半径]。
+	CapsuleCollider   ColliderShapeType = ColliderShapeType(physicsColliderCapsule) // 胶囊形，参数为[半径, 高度]。
+	PolygonCollider   ColliderShapeType = ColliderShapeType(physicsColliderPolygon) // 凸多边形，参数为[x0, y0, x1, y1, ...]。
+	TriggerExtraPixel float64           = 2.0                                       // 自动触发器相对外观边界额外增加的像素数。
 )
 
-// physicConfig common structure for physics configuration.
+// physicConfig 保存精灵碰撞体或触发器的配置。
 type physicConfig struct {
-	Mask   int64             // collision/trigger mask
-	Layer  int64             // collision/trigger layer
-	Type   ColliderShapeType // collider/trigger type
-	Pivot  mathf.Vec2        // pivot position
-	Params []float64         // shape parameters
+	Mask   int64             // 碰撞/触发掩码，用于筛选需要检测的层。
+	Layer  int64             // 碰撞/触发所属层。
+	Type   ColliderShapeType // 碰撞体/触发器形状类型。
+	Pivot  mathf.Vec2        // 形状中心相对精灵逻辑原点的偏移。
+	Params []float64         // 形状参数；矩形为[宽, 高]，圆形为[半径]，胶囊为[半径, 高度]，多边形为[x0, y0, x1, y1, ...]顶点坐标（至少3个顶点）。
 }
 
 // -----------------------------------------------------------------------------

@@ -18,31 +18,33 @@ package coroutine
 
 import "sync"
 
-// HandlerPolicy determines how a registration handles an overlapping invocation.
+// HandlerPolicy 决定同一个事件注册项尚在执行时，新一次触发如何处理。
 type HandlerPolicy uint8
 
 const (
-	// RestartExisting cancels the prior invocation when a new one is registered.
+	// RestartExisting 取消旧执行并接纳新执行；新 Thread 继承旧执行的排序位置。
 	RestartExisting HandlerPolicy = iota
-	// IgnoreWhileRunning cancels new invocations until the current one finishes.
+	// IgnoreWhileRunning 保留旧执行并取消本次新 Thread。
 	IgnoreWhileRunning
 )
 
-// HandlerState owns execution admission for a single registration.
-// It must not be copied after its first use.
+// HandlerState 保存单个事件注册项当前正在运行的 Thread 和重入策略。
+// 首次使用后不得复制；不同克隆精灵必须重新创建自己的 HandlerState。
 type HandlerState struct {
 	mu     sync.Mutex
 	active Thread
 	policy HandlerPolicy
 }
 
-// NewHandlerState creates unstarted execution state for a handler policy.
+// NewHandlerState 为指定策略创建尚未运行的处理器状态。
 func NewHandlerState(policy HandlerPolicy) HandlerState {
 	return HandlerState{policy: policy}
 }
 
-// Start admits or cancels a registered invocation and returns its cleanup.
-// Cleanup from an older invocation cannot release a newer invocation's state.
+// Start 决定本次处理器 Thread 是接纳、重启旧执行还是忽略，并返回退出 cleanup。
+//
+// 直接调用方：事件 Task.Setup；总体流程调用方：脚本事件批量派发。cleanup 通过比较
+// active == thread，保证旧执行迟到的退出不会清除已经替换上来的新执行状态。
 func (p *HandlerState) Start(thread Thread) func() {
 	p.mu.Lock()
 	previous := p.active

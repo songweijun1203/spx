@@ -1,6 +1,9 @@
 /*
  * Godot Web 引擎配置。
  *
+ * 本文件由 SCsub 覆盖 Godot 上游同名配置；升级引擎时需同步核对 Module/Godot
+ * 配置字段，避免宿主仍传旧字段但 Emscripten 或 Godot 已改变语义。
+ *
  * 宿主页面会用普通 JavaScript 对象传入选项，例如：
  *     const config = { executable: 'engine', unloadAfterInit: false };
  *     const engine = new Engine(config);

@@ -101,6 +101,7 @@ func onEngineStart() {
 func onEngineUpdate(delta float64) {
 	// 输入回放期间统一使用 SPX 固定逻辑步长，使脚本、计时器、Tween 和引擎更新保持一致。
 	delta = itime.EffectiveLogicalDeltaTime(delta)
+	//1 mgr更新
 	for _, mgr := range mgrs {
 		mgr.OnUpdate(delta)
 	}
@@ -109,9 +110,13 @@ func onEngineUpdate(delta float64) {
 	for _, sprite := range Sprites() {
 		sprites = append(sprites, sprite)
 	}
+
+	//2 精灵更新(此处是go侧的godot代理精灵，不是游戏业务精灵)
 	for _, sprite := range sprites {
-		sprite.OnUpdate(delta)
+		sprite.OnUpdate(delta) //代码中目前是空实现，此处的跟新应该怎么理解呢ß
 	}
+
+	//3 进入游戏帧流程
 	if coreCallbacks.OnEngineUpdate != nil {
 		coreCallbacks.OnEngineUpdate(delta)
 	}

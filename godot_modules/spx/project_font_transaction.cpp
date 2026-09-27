@@ -141,6 +141,7 @@ static Ref<FontFile> create_display_font(const Vector<uint8_t> &p_font_data) {
 }
 
 bool prepare_font(const String &p_path, SpxResMgr &p_resources, Vector<uint8_t> &r_data, Ref<FontFile> &r_font, String &r_error) {
+	// 直接调用方：prepare 及兼容的单项字体 API；同时为 LunaSVG 和 Godot UI 准备同一文件。
 	if (p_path.is_empty()) {
 		r_error = "Font path must not be empty.";
 		return false;
@@ -270,6 +271,8 @@ bool validate_preferences(const Vector<String> &p_preferences, const HashSet<Str
 }
 
 bool prepare(const Request &p_request, SpxResMgr &p_res_mgr, Prepared &r_prepared, String &r_error) {
+	// 直接调用方：SpxResMgr::apply_project_fonts；顶层来自 Go 游戏构建。
+	// 此阶段只构造局部 Ref/字节快照，不修改 ThemeDB 或进程级 LunaSVG 注册表。
 	r_prepared = Prepared();
 	r_prepared.preferences = p_request.preferences;
 	Ref<FontFile> font;

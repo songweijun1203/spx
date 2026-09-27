@@ -84,10 +84,19 @@ func (s *shapeManager) init() {
 	s.nextTextBubbleLayoutID = 0
 }
 
+// markCloneProxyPublicationReady 记录至少一个克隆已经完成首段初始化。
+//
+// 直接调用方：SpriteImpl.finishCloneInitialization；总体流程调用方：OnCloned 首段结束。
+// 它只发出帧边界通知，不直接显示 Godot 节点；真正公开由代理收集处理。
 func (s *shapeManager) markCloneProxyPublicationReady() {
 	s.pendingClonePublications.Store(true)
 }
 
+// takeCloneProxyPublications 在渲染前消费克隆就绪通知。
+//
+// 直接调用方：Game.OnEngineRender；总体流程调用方：Godot 每帧 update 的渲染准备阶段。
+// 随后的 syncPostCoroutineVisuals 会扫描所有精灵，由 collectProxyUpdate 将 Ready 克隆
+// 推进为 Published，并把最终服装、图层、变换和可见性提交给 Godot。
 func (s *shapeManager) takeCloneProxyPublications() bool {
 	return s.pendingClonePublications.Swap(false)
 }
@@ -227,9 +236,11 @@ func (s *shapeManager) addShape(child Shape) {
 	s.add(child)
 }
 
-// addClonedShape inserts a clone immediately behind the target it copied. This
-// matches Scratch: repeated clones of one target are ordered oldest to newest,
-// with the original target still in front of all of them.
+// addClonedShape 把克隆立即插到源对象后方，并更新活动对象和渲染层顺序。
+//
+// 直接调用方：Game.addClonedShape；总体流程调用方：createRuntimeClone。这样符合
+// Scratch 的层级语义：同一对象的克隆按从旧到新排列，原对象仍位于全部克隆之前。
+// 插入发生在 OnCloned 派发之前，因此处理器查询、移动或删除克隆时已经能找到该对象。
 func (s *shapeManager) addClonedShape(src, clone Shape) {
 	idx := s.findShapeIndex(src)
 	if idx < 0 {
@@ -245,8 +256,10 @@ func (s *shapeManager) addClonedShape(src, clone Shape) {
 	s.updateRenderLayers()
 }
 
-// reserveClone includes clones still running initialization code, which can
-// yield or create more clones before they enter the active shape list.
+// reserveClone 为尚未进入活动列表的克隆预占名额。
+//
+// 直接调用方：createRuntimeClone；总体流程调用方：精灵脚本的 Clone API。克隆初始化
+// 可能挂起或继续创建克隆，pendingClones 可防止这些对象绕过全局 maxClones 限制。
 func (s *shapeManager) reserveClone() bool {
 	if s.cloneCount+s.pendingClones >= maxClones {
 		return false

@@ -29,51 +29,49 @@ type vec2i struct {
 	Y int32 `json:"y"`
 }
 
-// Vec2 represents a 2D coordinate in world space (pixels)
+// Vec2 表示世界坐标系中的二维坐标（单位：像素）。
 type Vec2 struct {
 	X float64 `json:"x"`
 	Y float64 `json:"y"`
 }
 
-// tileSize represents the dimensions of a tile
+// tileSize 表示瓦片尺寸。
 type tileSize struct {
 	Width  int32 `json:"width"`
 	Height int32 `json:"height"`
 }
 
-// physicsData represents physics properties of a tile
+// physicsData 保存瓦片的物理属性。
 type physicsData struct {
-	CollisionPoints []Vec2 `json:"collision_points,omitempty"`
-	// other properties
+	CollisionPoints []Vec2 `json:"collision_points,omitempty"` // 碰撞多边形的顶点坐标。
 }
 
-// tileInfo represents information about a single tile in the tileset
+// tileInfo 表示瓦片集中的单个瓦片信息。
 type tileInfo struct {
 	AtlasCoords vec2i       `json:"atlas_coords"`
 	Physics     physicsData `json:"physics,omitempty"`
 }
 
-// tileSource represents a tileset source
+// tileSource 表示一个瓦片集资源。
 type tileSource struct {
 	ID          int32      `json:"id"`
 	TexturePath string     `json:"texture_path"`
 	Tiles       []tileInfo `json:"tiles"`
 }
 
-// tileSet represents the complete tileset information
+// tileSet 表示完整的瓦片集信息。
 type tileSet struct {
 	Sources []tileSource `json:"sources"`
-	// Other properties
 }
 
-// tileInstance represents a placed tile in the map
+// tileInstance 表示地图中放置的瓦片实例。
 type tileInstance struct {
 	TileCoords  vec2i `json:"tile_coords"`
 	SourceID    int32 `json:"source_id"`
 	AtlasCoords vec2i `json:"atlas_coords"`
 }
 
-// tilemapLayer represents a tilemap layer with compact tile data format
+// tilemapLayer 表示使用紧凑瓦片数据格式的地图层。
 type tilemapLayer struct {
 	ID       int32   `json:"id"`
 	Name     string  `json:"name"`
@@ -81,7 +79,7 @@ type tilemapLayer struct {
 	TileData []int32 `json:"tile_data"`
 }
 
-// tileMapData represents the complete tilemap data
+// tileMapData 表示完整的地图数据。
 type tileMapData struct {
 	Format   int32          `json:"format"`
 	TileSize tileSize       `json:"tile_size"`
@@ -89,7 +87,7 @@ type tileMapData struct {
 	Layers   []tilemapLayer `json:"layers"`
 }
 
-// DecoratorNode represents a Sprite2D node in the scene
+// DecoratorNode 表示场景中的 Sprite2D 装饰节点。
 type DecoratorNode struct {
 	Name           string    `json:"name"`
 	Path           string    `json:"path"`
@@ -99,12 +97,12 @@ type DecoratorNode struct {
 	Ratation       float64   `json:"rotation,omitempty"`
 	Pivot          Vec2      `json:"pivot,omitempty"`
 	ZIndex         int32     `json:"z_index,omitempty"`
-	ColliderType   string    `json:"collider_type,omitempty"` //"none","auto","circle","rect","capsule","polygon",
-	ColliderPivot  Vec2      `json:"collider_pivot,omitempty"`
-	ColliderParams []float64 `json:"collider_params,omitempty"`
+	ColliderType   string    `json:"collider_type,omitempty"`   // 碰撞体形状：none、auto、circle、rect、capsule 或 polygon。
+	ColliderPivot  Vec2      `json:"collider_pivot,omitempty"`  // 碰撞体相对节点原点的偏移。
+	ColliderParams []float64 `json:"collider_params,omitempty"` // 形状参数；多边形时为交替排列的顶点 x、y 坐标。
 }
 
-// spriteNode represents an instantiated prefab node in the scene
+// spriteNode 表示场景中实例化的预制体节点。
 type spriteNode struct {
 	Name           string                 `json:"name"`
 	Path           string                 `json:"path"`
@@ -114,13 +112,13 @@ type spriteNode struct {
 	Ratation       float64                `json:"rotation,omitempty"`
 	ZIndex         int32                  `json:"z_index,omitempty"`
 	Pivot          Vec2                   `json:"pivot,omitempty"`
-	ColliderType   string                 `json:"collider_type,omitempty"` //"none","auto","circle","rect","capsule","polygon",
-	ColliderPivot  Vec2                   `json:"collider_pivot,omitempty"`
-	ColliderParams []float64              `json:"collider_params,omitempty"`
+	ColliderType   string                 `json:"collider_type,omitempty"`   // 碰撞体形状：none、auto、circle、rect、capsule 或 polygon。
+	ColliderPivot  Vec2                   `json:"collider_pivot,omitempty"`  // 碰撞体相对节点原点的偏移。
+	ColliderParams []float64              `json:"collider_params,omitempty"` // 形状参数；多边形时为交替排列的顶点 x、y 坐标。
 	Properties     map[string]interface{} `json:"properties,omitempty"`
 }
 
-// TscnMapData represents the root structure for JSON output
+// TscnMapData 表示 JSON 输出的根结构。
 type TscnMapData struct {
 	TileMap    tileMapData     `json:"tilemap"`
 	Decorators []DecoratorNode `json:"decorators"`

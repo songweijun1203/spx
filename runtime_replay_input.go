@@ -25,44 +25,60 @@ import (
 	"github.com/goplus/spx/v3/internal/engine"
 )
 
-// inputSessionInput is the session-local adapter state needed to dispatch
-// resolved input through the ordinary SPX event hooks.
+// inputSessionInput 保存当前录制/回放会话的输入适配状态，把解析后的确定性输入
+// 转换为普通 SPX 高层事件，同时维护跨帧的鼠标位置和左键状态。
 type inputSessionInput struct {
+	// 上一个有效输入 tick 的派生状态，用于识别鼠标移动和按下/抬起边沿。
 	lastMousePos          mathf.Vec2
 	lastLeftButtonPressed bool
-	mouseEvents           []engine.MouseEvent
-	keyEvents             []engine.KeyEvent
-	pending               *inputSessionFrame // engine frame thread only
+	// 采样和转换时复用的临时切片，避免每帧重复分配。
+	mouseEvents []engine.MouseEvent
+	keyEvents   []engine.KeyEvent
+	// pending 是 OnEngineBeforeUpdate 已解析、等待 OnEngineUpdate 派发的帧快照，
+	// 仅由引擎帧线程访问；nil 表示本帧没有可推进的输入 tick。
+	pending *inputSessionFrame
 }
 
 type inputSessionFrame struct {
-	events    []event
+	// events 是根据有效输入状态生成的点击、移动和按键高层事件。
+	events []event
+	// keyEvents 保留回放格式的原始键盘边沿，用于处理录制/回放截图热键。
 	keyEvents []InputReplayKeyEvent
 }
 
-// Prepare one input tick before condition sampling, deferring user handlers and
-// capture requests until the engine clock has advanced.
+// prepareInputSessionTick 在条件采样前解析一个输入 tick。
+// 它会更新条件查询使用的有效输入状态，但只把高层事件暂存在 session.input.pending；
+// 用户处理器和截图请求推迟到逻辑时钟推进后的 dispatchInputSessionTick。
 func (p *inputManager) prepareInputSessionTick(session *inputSession, delta float64) bool {
+	// beginFrame 保证一个输入会话同一时间只打开一个引擎帧，并拒绝已经结束的会话。
 	if !session.beginFrame() {
 		return false
 	}
 	frame, err := p.resolveInputSessionTick(session, delta)
 	if err != nil {
+		// 解析失败也要关闭本帧，否则会话会永久停在 frameOpen 状态。
 		session.endFrame()
 		engine.Panic(err)
 		return false
 	}
+	// 建立 BeforeUpdate -> OnEngineUpdate 的交接点。
 	session.input.pending = frame
 	return true
 }
 
+// dispatchInputSessionTick 消费 BeforeUpdate 暂存的输入帧。
+// 调用发生在逻辑时钟推进之后：先处理配置的截图热键，再异步派发高层输入事件。
 func (p *inputManager) dispatchInputSessionTick(session *inputSession) {
 	frame := session.input.pending
+	// 先清空，确保同一个 tick 即使发生重入也不会重复派发。
 	session.input.pending = nil
 	session.captureConfiguredKeyPresses(frame.keyEvents)
 	p.dispatchInputSessionEvents(frame.events)
 }
 
+// resolveInputSessionTick 把本帧底层输入解析为一个确定性的有效输入帧。
+// 录制模式使用现场采样并写入控制器；回放模式由控制器用记录值替换现场状态。
+// 返回前只更新查询状态、计算事件列表，不执行任何用户事件处理器。
 func (p *inputManager) resolveInputSessionTick(session *inputSession, delta float64) (*inputSessionFrame, error) {
 	session.operationMu.Lock()
 	defer session.operationMu.Unlock()
@@ -70,8 +86,12 @@ func (p *inputManager) resolveInputSessionTick(session *inputSession, delta floa
 	resolved, err := session.consumeSampledInputTickLocked(delta, func() (InputReplayState, []InputReplayMouseEvent, []InputReplayKeyEvent) {
 		pointValue := engine.Managers().InputMgr.GetGlobalMousePos()
 		var buttons uint8
+		// 输入会话在帧采样时消费 onUpdate 已缓存的鼠标边沿及当前按住状态；
+		// 普通实时输入循环不调用 GetMouseInput，而是单独轮询左键状态。
 		c.mouseEvents, buttons = engine.GetMouseInput(c.mouseEvents[:0])
 		var keysDown []int64
+		// 与鼠标同理：输入会话取边沿和当前按住状态快照；普通模式的 inputEventLoop
+		// 则通过 GetKeyEvents 消费有序边沿。
 		c.keyEvents, keysDown = engine.GetKeyInput(c.keyEvents[:0])
 
 		return InputReplayState{
@@ -89,11 +109,15 @@ func (p *inputManager) resolveInputSessionTick(session *inputSession, delta floa
 	effectivePoint := mathf.Vec2{X: resolved.frame.State.Mouse.X, Y: resolved.frame.State.Mouse.Y}
 	effectiveLeftPressed := resolved.frame.State.Buttons&(1<<0) != 0
 	if resolved.firstTick {
+		// 第一帧先对齐派生状态，避免把会话初始按键/位置误判为本帧新事件。
 		p.resetInputSessionDerivedState(session, resolved.initial)
 	}
+	// 后续统一使用控制器解析后的有效边沿：录制时通常等于现场输入，
+	// 回放时来自记录文件，而不是当前机器上的真实输入。
 	c.mouseEvents = engineMouseEventsFromReplay(resolved.frame.MouseEvents, c.mouseEvents)
 	c.keyEvents = engineKeyEventsFromReplay(resolved.frame.KeyEvents, c.keyEvents)
 	p.setMousePos(effectivePoint)
+	// 本阶段只收集事件对象；真正的 handleEvent 调用留到 OnEngineUpdate。
 	inputEvents := make([]event, 0, len(c.mouseEvents)+len(c.keyEvents)+3)
 
 	c.lastMousePos, c.lastLeftButtonPressed = coreruntime.ProcessInputFrame(

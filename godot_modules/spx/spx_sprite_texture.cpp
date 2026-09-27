@@ -39,6 +39,8 @@
 #include "spx_sprite_mgr.h"
 
 void SpxSprite::set_texture_atlas_direct(GdString p_path, GdRect2 p_region, GdBool p_direct) {
+	// 直接调用方：SpxSpriteMgr；顶层调用方：Go 服装/印章图集切换。
+	// AtlasTexture 仅保存底图 Ref 和区域，不复制像素，资源寿命由引用计数保证。
 	ERR_FAIL_NULL_MSG(anim2d,
 			"SpxSprite: AnimatedSprite2D component is missing.");
 	const String path = SpxStr(p_path);
@@ -58,6 +60,7 @@ void SpxSprite::set_texture_atlas_direct(GdString p_path, GdRect2 p_region, GdBo
 }
 
 void SpxSprite::set_texture_direct(GdString p_path, GdBool p_direct) {
+	// 直接调用方：SpxSpriteMgr/批量视觉同步；顶层调用方：runtime_sync.applyCostumeUpdate。
 	ERR_FAIL_NULL_MSG(anim2d,
 			"SpxSprite: AnimatedSprite2D component is missing.");
 	VisualSource source;
@@ -125,6 +128,7 @@ Rect2 SpxSprite::get_rect() const {
 void SpxSprite::_prepare_texture(const Ref<Texture2D> &p_texture,
 		const VisualSource &p_source,
 		PreparedVisual &r_visual) {
+	// 将单图包装为一帧 SpriteFrames，使纹理与动画共用同一 AnimatedSprite2D 提交路径。
 	r_visual = PreparedVisual();
 	r_visual.source = p_source;
 	r_visual.animation = SpxSpriteMgr::default_texture_anim;

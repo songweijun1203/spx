@@ -11,6 +11,7 @@
 // 最近调用方：Godot 的模块初始化框架会按 CORE -> SERVERS -> SCENE 等级调用。
 // 最顶层入口：engine.js 的 Engine.start() -> Module.callMain() -> Godot C++ main。
 // 注意：这里初始化的是 Godot/SPX 底层模块，不代表具体 .spx 游戏已经启动。
+// Godot 规定：依赖 ClassDB/Node/SceneTree 的类型和回调只能在 SCENE 级别注册。
 void initialize_spx_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_CORE) {
 		// 注册 Go 主动调用 Godot 时使用的 spx_* 接口表。
@@ -30,6 +31,7 @@ void initialize_spx_module(ModuleInitializationLevel p_level) {
 }
 
 // 最近调用方：Godot 的模块反初始化框架；最顶层来源：Godot main 退出或初始化失败回滚。
+// Godot 规定：反初始化按 SCENE -> SERVERS -> CORE 逆序发生，因此各层只释放本层资源。
 void uninitialize_spx_module(ModuleInitializationLevel p_level) {
 	if (p_level == MODULE_INITIALIZATION_LEVEL_SCENE) {
 		Spx::unregister_main_loop_callbacks();

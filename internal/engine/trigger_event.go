@@ -34,6 +34,8 @@ type triggerEventQueue struct {
 
 var triggerEvents triggerEventQueue
 
+// GetTriggerEvents 取走帧边界缓存到 ready 的触发事件并清空队列；
+// Game.OnEngineRender 随后通过 processPhysicsTriggers 派发 OnTouchStart。
 func GetTriggerEvents(dst []TriggerEvent) []TriggerEvent {
 	return triggerEvents.drain(dst)
 }

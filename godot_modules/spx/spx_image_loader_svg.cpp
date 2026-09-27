@@ -46,32 +46,31 @@ void SpxImageLoaderSVG::set_forced_color_map(const HashMap<Color, Color> &p_colo
 }
 
 void SpxImageLoaderSVG::_replace_color_property(const HashMap<Color, Color> &p_color_map, const String &p_prefix, String &r_string) {
-	// Replace colors in the SVG based on what is passed in `p_color_map`.
-	// Used to change the colors of editor icons based on the used theme.
-	// The strings being replaced are typically of the form:
+	// 根据 p_color_map 替换 SVG 颜色，用于让素材颜色跟随主题。待替换文本通常形如：
 	//   fill="#5abbef"
-	// But can also be 3-letter codes, include alpha, be "none" or a named color
-	// string ("blue"). So we convert to Godot Color to compare with `p_color_map`.
+	// 也可能是三位色值、带 alpha、"none" 或命名色（如 "blue"），因此统一转为 Godot Color 比较。
 
 	const int prefix_len = p_prefix.length();
 	int pos = r_string.find(p_prefix);
 	while (pos != -1) {
-		pos += prefix_len; // Skip prefix.
+		pos += prefix_len; // 跳过属性前缀。
 		int end_pos = r_string.find_char('"', pos);
 		ERR_FAIL_COND_MSG(end_pos == -1, vformat("Malformed SVG string after property \"%s\".", p_prefix));
 		const String color_code = r_string.substr(pos, end_pos - pos);
 		if (color_code != "none" && !color_code.begins_with("url(")) {
-			const Color color = Color(color_code); // Handles both HTML codes and named colors.
+			const Color color = Color(color_code); // 同时支持 HTML 色值和命名色。
 			if (p_color_map.has(color)) {
 				r_string = r_string.left(pos) + "#" + p_color_map[color].to_html(false) + r_string.substr(end_pos);
 			}
 		}
-		// Search for other occurrences.
+		// 继续查找后续同名属性。
 		pos = r_string.find(p_prefix, pos);
 	}
 }
 
 Error SpxImageLoaderSVG::create_image_from_utf8_buffer(Ref<Image> p_image, const uint8_t *p_buffer, int p_buffer_size, float p_scale, bool p_upsample) {
+	// 直接调用方：load_image/create_image_from_string；顶层调用方：SpxSvgCache -> SpxResMgr。
+	// LunaSVG 文档对象仅在本函数存活，渲染结果复制进调用方持有的 Godot Image Ref。
 	ERR_FAIL_COND_V_MSG(Math::is_zero_approx(p_scale), ERR_INVALID_PARAMETER, "SpxImageLoaderSVG: Can't load SVG with a scale of 0.");
 	ERR_FAIL_COND_V_MSG(p_scale < 0.0f, ERR_INVALID_PARAMETER, "SpxImageLoaderSVG: Can't load SVG with a negative scale.");
 
@@ -85,7 +84,7 @@ Error SpxImageLoaderSVG::create_image_from_utf8_buffer(Ref<Image> p_image, const
 
 	uint32_t width = document->width();
 	uint32_t height = document->height();
-	// Treat Scratch's zero-sized costumes as transparent images.
+	// Scratch 的零尺寸服装按透明图像处理。
 	if (width == 0 || height == 0) {
 		PackedByteArray transparent_pixel;
 		transparent_pixel.resize(4);
@@ -184,6 +183,7 @@ Error SpxImageLoaderSVG::load_image(Ref<Image> p_image, Ref<FileAccess> p_fileac
 }
 
 Error SpxImageLoaderSVG::load_image(const String &p_path, Ref<Image> p_image, BitField<ImageFormatLoader::LoaderFlags> p_flags, float p_scale) {
+	// FileAccess Ref 在函数结束自动释放；路径读取遵循 Godot res://、user:// 和绝对路径规则。
 	Ref<FileAccess> file = FileAccess::open(p_path, FileAccess::READ);
 	ERR_FAIL_COND_V_MSG(file.is_null(), ERR_CANT_OPEN, "SpxImageLoaderSVG: Cannot open SVG file: " + p_path);
 	return load_image(p_image, file, p_flags, p_scale);

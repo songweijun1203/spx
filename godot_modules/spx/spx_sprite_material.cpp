@@ -38,6 +38,8 @@
 #include "spx_abi.h"
 
 void SpxSprite::set_material_shader(GdString p_path) {
+	// 直接调用方：SpxSpriteMgr；顶层调用方：Go 服装/VFX 初始化。
+	// Godot Material 是 Resource；每个精灵需要独立 ShaderMaterial 参数实例，Shader 可共享 Ref。
 	Ref<Shader> shader = ResourceLoader::load(SpxStr(p_path));
 	if (shader.is_null()) {
 		print_line(String("load spx_sprite_shader failed: ") + SpxStr(p_path));
@@ -155,6 +157,7 @@ GdColor SpxSprite::get_material_params_color(GdString p_effect) {
 }
 
 bool SpxSprite::_ensure_material_ready(const char *p_context, GdBool p_create_if_missing) {
+	// 直接调用方：所有材质参数 getter/setter；仅在主线程访问 CanvasItem 材质。
 	if (anim2d == nullptr) {
 		print_line(String(p_context) + " failed, AnimatedSprite2D is missing.");
 		return false;

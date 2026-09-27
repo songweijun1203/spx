@@ -39,22 +39,25 @@
 Mutex SpxDebugMgr::lock;
 
 void SpxDebugMgr::on_awake() {
-
+	// 直接调用方：SpxEngine::_notify_managers(on_awake)；顶层为 Godot/SPX 启动。
 	debug_root = memnew(Node2D);
 	debug_root->set_name("debug_root");
 	debug_root->set_z_index(1000);
 	debug_root->set_z_as_relative(false);
 	get_spx_root()->add_child(debug_root);
+	// add_child 后 debug_root 及其 Line2D 子节点均由场景树拥有。
 }
 
 void SpxDebugMgr::on_update(float delta) {
-
+	// 直接调用方：SpxEngine 每帧 Manager 分发；顶层为 Godot 主循环。
+	// 调试图形定义为“显示一帧”，先前提交的 Node 在下一次更新统一 queue_free。
 	lock.lock();
 	_clear_debug_shapes();
 	lock.unlock();
 }
 
 void SpxDebugMgr::on_destroy() {
+	// 直接调用方：SpxEngine::on_destroy；顶层为 Godot 节点退出/引擎关闭。
 	lock.lock();
 	_clear_debug_shapes();
 	if (debug_root) {
@@ -71,6 +74,7 @@ void SpxDebugMgr::on_reset(int reset_code) {
 void SpxDebugMgr::_clear_debug_shapes() {
 	for (const DebugShape &shape : debug_shapes) {
 		if (shape.node && shape.node->is_inside_tree()) {
+			// Godot 规则：不要在场景遍历/回调期间直接 delete Node，queue_free 会在帧尾删除。
 			shape.node->queue_free();
 		}
 	}
@@ -78,6 +82,7 @@ void SpxDebugMgr::_clear_debug_shapes() {
 }
 
 void SpxDebugMgr::debug_draw_circle(GdVec2 pos, GdFloat radius, GdColor color) {
+	// 直接调用方：生成的 debug ABI；顶层为 Go DebugMgr.DebugDrawCircle。
 	if (!debug_root) {
 		return;
 	}
@@ -108,6 +113,7 @@ void SpxDebugMgr::debug_draw_circle(GdVec2 pos, GdFloat radius, GdColor color) {
 }
 
 void SpxDebugMgr::debug_draw_rect(GdVec2 pos, GdVec2 size, GdColor color) {
+	// 直接调用方：生成的 debug ABI；顶层为 Go DebugMgr.DebugDrawRect。
 	if (!debug_root) {
 		return;
 	}
@@ -139,6 +145,7 @@ void SpxDebugMgr::debug_draw_rect(GdVec2 pos, GdVec2 size, GdColor color) {
 }
 
 void SpxDebugMgr::debug_draw_line(GdVec2 from, GdVec2 to, GdColor color) {
+	// 直接调用方：生成的 debug ABI；顶层为 Go DebugMgr.DebugDrawLine。
 	if (!debug_root) {
 		return;
 	}

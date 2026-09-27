@@ -37,11 +37,13 @@
 #include "spx_engine.h"
 
 void SpxLayerSorter::set_mode(LayerSortMode mode) {
+	// 直接调用方：SpxExtMgr ABI；顶层为 Go 项目 layerSortMode 初始化。
 	sort_mode = mode;
 	_create_drawer();
 }
 
 void SpxLayerSorter::update(const Vector<ISortableSprite *> &sortables) {
+	// 直接调用方：SpxSpriteMgr::on_update；顶层为 Godot 每帧主循环。
 	if (sort_mode == LayerSortMode::NONE) {
 		return;
 	}
@@ -56,6 +58,7 @@ void SpxLayerSorter::update(const Vector<ISortableSprite *> &sortables) {
 	}
 
 	float ratio = float(dynamic_dirty.size()) / float(dynamic_sorted.size() + 1);
+	// 少量变化用有序重插，变化比例较高时全量 sort 更便宜。
 	if (ratio > full_sort_ratio) {
 		_full_sort_dynamic();
 	} else {
@@ -239,6 +242,7 @@ void SpxLayerSorter::_apply_z_index_merged() {
 	auto it_dynamic = dynamic_sorted.begin();
 
 	int z = 1;
+	// 线性归并静态/动态有序表，统一分配绝对 z_index，避免两个表各自排序后互相遮挡。
 	while (it_static != static_sorted.end() || it_dynamic != dynamic_sorted.end()) {
 		bool use_dynamic = false;
 		if (it_static == static_sorted.end()) {
@@ -272,6 +276,7 @@ void SpxLayerSorter::_create_drawer() {
 		}
 
 		drawer = memnew(LayerSorterDebugDrawer(this));
+		// add_child 后调试 Node 由场景树拥有；sorter 仅保存非拥有指针。
 		root->add_child(drawer);
 	}
 }
@@ -291,6 +296,7 @@ void LayerSorterDebugDrawer::_bind_methods() {
 }
 
 void LayerSorterDebugDrawer::_notification(int p_what) {
+	// 直接调用方：Godot SceneTree/CanvasItem；顶层为入树、绘制和退出树通知。
 	if (p_what == NOTIFICATION_READY) {
 		_ready();
 	}
@@ -312,6 +318,7 @@ void LayerSorterDebugDrawer::_ready() {
 }
 
 void LayerSorterDebugDrawer::_draw() {
+	// Godot 规定 draw_* 只能在 NOTIFICATION_DRAW 内调用；update() 仅 queue_redraw。
 	if (!sorter) {
 		return;
 	}
@@ -345,6 +352,7 @@ void LayerSorterDebugDrawer::_draw() {
 }
 
 void LayerSorterDebugDrawer::_exit_tree() {
+	// 场景树释放调试 Node 时解除单例中的反向裸指针，避免后续 update 访问失效节点。
 	if (sorter) {
 		sorter->unlink_drawer();
 	}

@@ -39,6 +39,7 @@
 namespace {
 
 void update_debug_overlays(Node *p_node, bool p_enabled) {
+	// 由 debug mode 切换触发，在主线程递归遍历 SceneTree 内部节点。
 	if (SpxCollisionDebugOverlay *overlay = Object::cast_to<SpxCollisionDebugOverlay>(p_node)) {
 		overlay->sync_debug_mode(p_enabled);
 	}
@@ -78,6 +79,7 @@ CollisionShape2D *SpxCollisionDebugOverlay::_get_target() const {
 
 bool SpxCollisionDebugOverlay::_is_native_collision_debug_visible() const {
 	if (Engine::get_singleton()->is_editor_hint()) {
+		// 编辑器会自行绘制碰撞形状，SPX 覆盖层必须让位以免重影。
 		return true;
 	}
 
@@ -87,6 +89,7 @@ bool SpxCollisionDebugOverlay::_is_native_collision_debug_visible() const {
 
 void SpxCollisionDebugOverlay::_sync_visibility(bool p_debug_mode) {
 	const bool monitor_native_debug = requested_visible && p_debug_mode && !Engine::get_singleton()->is_editor_hint();
+	// 运行时原生碰撞调试提示可能动态变化，只有需要时才启用逐帧 process 监测。
 	set_process(monitor_native_debug);
 
 	const bool should_be_visible = requested_visible && p_debug_mode && !_is_native_collision_debug_visible();
@@ -101,12 +104,14 @@ void SpxCollisionDebugOverlay::_sync_visibility(bool p_debug_mode) {
 }
 
 void SpxCollisionDebugOverlay::_on_target_redrawn() {
+	// 直接调用方：CollisionShape2D 的 draw 信号；顶层为目标形状重绘。
 	if (is_visible()) {
 		queue_redraw();
 	}
 }
 
 void SpxCollisionDebugOverlay::_draw_debug_shape() {
+	// 直接调用方：NOTIFICATION_DRAW；Godot 规定 draw_* 只能在 CanvasItem 绘制阶段执行。
 	CollisionShape2D *target = _get_target();
 	if (target == nullptr) {
 		return;
@@ -138,6 +143,7 @@ void SpxCollisionDebugOverlay::_draw_debug_shape() {
 }
 
 void SpxCollisionDebugOverlay::_notification(int p_what) {
+	// 直接调用方：Godot SceneTree/CanvasItem；顶层为入树、帧处理与渲染通知。
 	switch (p_what) {
 		case NOTIFICATION_ENTER_TREE:
 		case NOTIFICATION_PROCESS:
@@ -152,9 +158,11 @@ void SpxCollisionDebugOverlay::_notification(int p_what) {
 }
 
 void SpxCollisionDebugOverlay::configure(CollisionShape2D *p_target, const Color &p_color, bool p_visible) {
+	// 直接调用方：spx_ensure_collision_debug_overlay；顶层为精灵碰撞体创建/克隆配置。
 	CollisionShape2D *old_target = _get_target();
 	const Callable redraw_callable = callable_mp(this, &SpxCollisionDebugOverlay::_on_target_redrawn);
 	if (old_target != nullptr && old_target != p_target && old_target->is_connected(SNAME("draw"), redraw_callable)) {
+		// Godot 信号不会表达本类的目标语义；切换目标前必须主动断开旧连接。
 		old_target->disconnect(SNAME("draw"), redraw_callable);
 	}
 
@@ -171,8 +179,7 @@ void SpxCollisionDebugOverlay::set_debug_color(const Color &p_color) {
 	const bool color_changed = debug_color != p_color;
 	debug_color = p_color;
 	if (CollisionShape2D *target = _get_target()) {
-		// Native collision debugging draws on CollisionShape2D itself. Keeping its
-		// public debug color in sync prevents a duplicate overlay in that mode.
+		// Godot 原生碰撞调试直接绘制 CollisionShape2D；同步公开颜色可在切换模式时保持一致。
 		if (target->get_debug_color() != p_color) {
 			target->set_debug_color(p_color);
 		}
@@ -197,8 +204,8 @@ SpxCollisionDebugOverlay *spx_find_collision_debug_overlay(CollisionShape2D *p_t
 
 	for (int i = 0; i < p_target->get_child_count(true); ++i) {
 		SpxCollisionDebugOverlay *overlay = Object::cast_to<SpxCollisionDebugOverlay>(p_target->get_child(i, true));
-		// Node::duplicate recreates this internal node without its runtime target.
-		// on_start/configure binds the copy to its own CollisionShape2D.
+			// Node::duplicate 会复制内部节点但不会恢复运行时 target；on_start/configure
+			// 会把副本重新绑定到其所属 CollisionShape2D。
 		if (overlay != nullptr) {
 			return overlay;
 		}
@@ -214,9 +221,9 @@ SpxCollisionDebugOverlay *spx_ensure_collision_debug_overlay(CollisionShape2D *p
 		overlay = memnew(SpxCollisionDebugOverlay);
 		overlay->set_name("_SpxCollisionDebugOverlay");
 		p_target->add_child(overlay, false, Node::INTERNAL_MODE_FRONT);
+		// INTERNAL_MODE_FRONT 表明它是实现细节，并保证覆盖层位于目标的内部子节点前部。
 	} else if (overlay->get_internal_mode() != Node::INTERNAL_MODE_FRONT) {
-		// Node::duplicate adds copied children as ordinary nodes. Restore the
-		// overlay's implementation-only position before configuring the new target.
+		// Node::duplicate 会把复制子节点作为普通节点加入；重新挂载以恢复内部节点语义。
 		p_target->remove_child(overlay);
 		p_target->add_child(overlay, false, Node::INTERNAL_MODE_FRONT);
 	}
@@ -225,6 +232,7 @@ SpxCollisionDebugOverlay *spx_ensure_collision_debug_overlay(CollisionShape2D *p
 }
 
 void spx_collision_debug_mode_changed(bool p_enabled) {
+	// 直接调用方：Spx::set_debug_mode；顶层为 Go PlatformMgr.SetDebugMode。
 	SceneTree *tree = SceneTree::get_singleton();
 	if (tree == nullptr || tree->get_root() == nullptr) {
 		return;

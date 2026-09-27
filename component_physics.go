@@ -30,23 +30,23 @@ import (
 // ============================================================================
 // Physics Component
 // ============================================================================
-// This component manages sprite physics state, collision, and trigger shapes.
+// 此组件管理精灵的物理状态、碰撞体和触发器形状。
 
-// physicsComponent encapsulates all physics-related functionality.
+// physicsComponent 封装精灵相关的全部物理功能。
 type physicsComponent struct {
 	componentBase
 
-	triggerInfo   physicConfig
-	collisionInfo physicConfig
+	triggerInfo   physicConfig // 触发器配置。
+	collisionInfo physicConfig // 碰撞体配置。
 
-	physicsMode     PhysicsMode
-	mass            float64
-	friction        float64
-	airDrag         float64
-	gravity         float64
-	autoShapesDirty bool
+	physicsMode     PhysicsMode // 物理模拟模式。
+	mass            float64     // 质量。
+	friction        float64     // 摩擦系数。
+	airDrag         float64     // 空气阻力系数。
+	gravity         float64     // 重力缩放系数。
+	autoShapesDirty bool        // 外观变化后是否需要重新计算自动形状。
 
-	collisionTargets map[string]bool
+	collisionTargets map[string]bool // 已发生碰撞的目标精灵名称集合。
 }
 
 // ============================================================================

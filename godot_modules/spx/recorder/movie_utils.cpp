@@ -31,6 +31,8 @@
 #include "movie_utils.h"
 #include "core/os/os.h"
 
+// 统一读取 Godot `--verbose`/stdout verbose 状态。
+// 直接调用方：各录制器的诊断日志分支；顶层调用方：Godot 命令行日志配置。
 bool MovieDebugUtils::is_stdout_verbose() {
 	return OS::get_singleton()->is_stdout_verbose();
 }

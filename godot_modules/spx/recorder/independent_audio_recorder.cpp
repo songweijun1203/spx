@@ -12,6 +12,9 @@
 #include "core/string/print_string.h"
 #include "movie_utils.h"
 
+// 独立音频录制流水线：Godot 音频线程只把 PCM 推入环形缓冲，专用 Thread 按固定
+// chunk 时钟消费并写文件，避免磁盘 I/O 阻塞 AudioEffect::process。
+
 IndependentAudioRecorder::IndependentAudioRecorder() {
 	recording_active.store(false);
 	thread_started.store(false);
@@ -27,6 +30,9 @@ IndependentAudioRecorder::~IndependentAudioRecorder() {
 	}
 }
 
+// 配置缓冲并打开仅音频 AVI writer，尚不启动工作线程。
+// 直接调用方：ObsStyleMovieWriter::setup_components()；顶层调用方：Go/命令行开始录制。
+// FileAccess 实例会在录制线程写入；录制期间不得从其他线程同时操作该 writer。
 Error IndependentAudioRecorder::initialize(HybridAudioDriver *p_audio_driver,
 		const String &p_audio_path,
 		const AudioConfig &p_config) {
@@ -48,15 +54,15 @@ Error IndependentAudioRecorder::initialize(HybridAudioDriver *p_audio_driver,
 
 	buffer_size = config.sample_rate * config.channels * config.buffer_size_seconds;
 
-	// Calculate the power for the RingBuffer
+	// Godot RingBuffer 用 2 的幂表示容量，因此向上取整配置的样本数。
 	int power = 0;
 	while ((1 << power) < (int)buffer_size) {
 		power++;
 	}
-	int actual_buffer_size = 1 << power; // Actual buffer size
+	int actual_buffer_size = 1 << power; // 实际可用容量。
 
 	audio_ring_buffer = RingBuffer<int32_t>(power);
-	buffer_size = actual_buffer_size; // Update to actual size
+	buffer_size = actual_buffer_size; // 保存取整后的实际容量。
 
 	temp_audio_buffer.resize(config.chunk_size * config.channels);
 	chunk_buffer.resize(config.chunk_size * config.channels);
@@ -76,6 +82,9 @@ Error IndependentAudioRecorder::initialize(HybridAudioDriver *p_audio_driver,
 	return OK;
 }
 
+// 清空旧数据并启动 Godot Thread。
+// 直接调用方：ObsStyleMovieWriter::write_begin()；顶层调用方：实时录制启动。
+// Godot Thread 规则：对象销毁前必须先令 recording_active=false 并 wait_to_finish()。
 Error IndependentAudioRecorder::start_recording() {
 	if (recording_active.load()) {
 		ERR_PRINT("IndependentAudioRecorder: Recording is already in progress");
@@ -104,11 +113,14 @@ Error IndependentAudioRecorder::start_recording() {
 	return OK;
 }
 
+// 原子地只执行一次停止：先通知 worker 退出并 join，再关闭/回填 AVI 文件头。
+// 直接调用方：ObsStyleMovieWriter::write_end()/cleanup_components()/析构；顶层调用方：停止录制。
 void IndependentAudioRecorder::stop_recording() {
 	// Atomic check-and-set to prevent double cleanup
+	// 原子 compare-exchange 防止并发或重复停止造成二次 join/close。
 	bool expected = true;
 	if (!recording_active.compare_exchange_strong(expected, false)) {
-		// Already stopped or stopping
+		// 已停止或另一调用方正在停止。
 		return;
 	}
 
@@ -131,6 +143,9 @@ void IndependentAudioRecorder::stop_recording() {
 	}
 }
 
+// 音频线程生产入口，只在互斥区内写环形缓冲，不执行文件 I/O。
+// 直接调用方：HybridAudioDriver::capture_audio_data()；顶层调用方：Godot AudioEffect 混音回调。
+// Godot 规则：音频线程不能等待录制 worker 或访问 SceneTree；缓冲已满时本批直接丢弃。
 void IndependentAudioRecorder::on_audio_output(const int32_t *p_buffer, int p_frame_count) {
 	if (!recording_active.load() || !p_buffer || p_frame_count <= 0) {
 		return;
@@ -181,19 +196,19 @@ void IndependentAudioRecorder::update_config(const AudioConfig &p_config) {
 	config.buffer_size_seconds = p_config.buffer_size_seconds;
 	config.enable_audio_monitoring = p_config.enable_audio_monitoring;
 
-	// Recalculate buffer size
+	// 重新计算并向上取整 RingBuffer 容量；仅允许停止状态调用。
 	buffer_size = config.sample_rate * config.channels * config.buffer_size_seconds;
 
-	// Calculate the power for the RingBuffer
+	// Godot RingBuffer 的构造参数是容量指数。
 	int power = 0;
 	while ((1 << power) < (int)buffer_size) {
 		power++;
 	}
-	int actual_buffer_size = 1 << power; // Actual buffer size
+	int actual_buffer_size = 1 << power; // 实际容量。
 
-	// Reinitialize the ring buffer
+	// 重新建立环形缓冲；旧数据全部丢弃。
 	audio_ring_buffer = RingBuffer<int32_t>(power);
-	buffer_size = actual_buffer_size; // Update to actual size
+	buffer_size = actual_buffer_size; // 保存实际容量。
 
 	temp_audio_buffer.resize(config.chunk_size * config.channels);
 	chunk_buffer.resize(config.chunk_size * config.channels);
@@ -231,11 +246,16 @@ String IndependentAudioRecorder::get_debug_info() const {
 	return info;
 }
 
+// Godot Thread 的 C 风格 trampoline。
+// 直接调用方：Thread::start()；顶层调用方：start_recording()。
 void IndependentAudioRecorder::recording_thread_func(void *p_userdata) {
 	IndependentAudioRecorder *recorder = static_cast<IndependentAudioRecorder *>(p_userdata);
 	recorder->recording_loop();
 }
 
+// 独立音频线程主循环：按 CHUNK_INTERVAL_USEC 的单调时钟节奏消费并写入 PCM chunk。
+// 直接调用方：recording_thread_func()；顶层调用方：start_recording()。
+// 本线程只操作受锁缓冲、统计和专属 FileAccess，不触碰 Godot SceneTree/渲染对象。
 void IndependentAudioRecorder::recording_loop() {
 	uint64_t next_chunk_time = recording_start_time;
 	uint64_t chunk_count = 0;
@@ -262,17 +282,19 @@ void IndependentAudioRecorder::recording_loop() {
 			next_chunk_time += CHUNK_INTERVAL_USEC;
 		}
 
-		// Precise sleep control
+		// 精确休眠：粗睡眠预留 500 微秒，减少跨过下一个 chunk 截止点的概率。
 		current_time = OS::get_singleton()->get_ticks_usec();
 		if (next_chunk_time > current_time) {
 			uint64_t sleep_time = next_chunk_time - current_time;
-			if (sleep_time > 1000) { // If we need to wait more than 1ms
-				OS::get_singleton()->delay_usec(sleep_time - 500); // Leave a 500 microsecond buffer
+			if (sleep_time > 1000) { // 等待超过 1ms 才进入系统睡眠。
+				OS::get_singleton()->delay_usec(sleep_time - 500); // 预留 500 微秒余量。
 			}
 		}
 	}
 }
 
+// 从环形缓冲取一个完整 chunk 并写入独占的 SimpleAudioWriter。
+// 直接调用方：recording_loop()；顶层调用方：音频录制 worker。
 bool IndependentAudioRecorder::process_audio_chunk(uint64_t current_recording_time) {
 	if (!read_audio_chunk(chunk_buffer, config.chunk_size * config.channels)) {
 		handle_buffer_underrun();
@@ -299,7 +321,7 @@ bool IndependentAudioRecorder::read_audio_chunk(Vector<int32_t> &output_buffer, 
 	uint32_t available = get_available_samples();
 
 	if (available < requested_samples) {
-		return false; // Not enough data
+		return false; // 数据不足，留给下一轮并记录 underrun。
 	}
 
 	MutexLock lock(buffer_mutex);
@@ -307,7 +329,7 @@ bool IndependentAudioRecorder::read_audio_chunk(Vector<int32_t> &output_buffer, 
 	int samples_read = audio_ring_buffer.read(output_buffer.ptrw(), requested_samples);
 
 	if (samples_read < (int)requested_samples) {
-		// Fill the remaining samples with 0
+		// 并发消费导致少读时用静音补齐，保证 writer 收到固定 chunk 大小。
 		for (int i = samples_read; i < (int)requested_samples; i++) {
 			output_buffer.write[i] = 0;
 		}
@@ -324,11 +346,11 @@ void IndependentAudioRecorder::update_statistics(uint64_t chunk_process_start_ti
 
 	stats.recording_duration_us = current_time - recording_start_time;
 
-	// Update average processing time (using moving average)
+	// 用移动平均平滑单次磁盘写入抖动。
 	if (stats.avg_chunk_process_time_us == 0) {
 		stats.avg_chunk_process_time_us = process_time;
 	} else {
-		// Use a moving average of 90% old value + 10% new value
+		// 旧值权重 90%，新值权重 10%。
 		stats.avg_chunk_process_time_us = (stats.avg_chunk_process_time_us * 9 + process_time) / 10;
 	}
 
@@ -344,7 +366,7 @@ void IndependentAudioRecorder::handle_buffer_underrun() {
 	MutexLock lock(stats_mutex);
 	stats.buffer_underruns++;
 
-	// Fill with silence data
+	// 预先清零 chunk；当前轮不写文件，后续成功读取会覆盖该缓冲。
 	chunk_buffer.fill(0);
 }
 
@@ -352,7 +374,7 @@ void IndependentAudioRecorder::handle_buffer_overrun() {
 	MutexLock lock(stats_mutex);
 	stats.buffer_overruns++;
 
-	// Skip the oldest data to make space
+	// 兼容统计游标前移；当前 on_audio_output 会放弃整批新数据，不修改 RingBuffer 内容。
 	uint32_t samples_to_skip = config.chunk_size * config.channels;
 	uint32_t read_pos = buffer_read_pos.load();
 	read_pos = (read_pos + samples_to_skip) % buffer_size;

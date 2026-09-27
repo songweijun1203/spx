@@ -1,3 +1,8 @@
+// SPX Web 的反向回调装配层：把 Godot C++ 事件接到 Emscripten JS Library，
+// 再由 library_godot_gdspx.js 分发给 Go WASM。
+// 直接调用方：模块 CORE 初始化和 JS Library 注册的函数指针回调；
+// 顶层来源：Godot 主循环/输入/碰撞事件，以及浏览器宿主的 reset、游戏数据更新。
+
 #include "godot_js_spx.h"
 #include "spx_web_bridge.h"
 
@@ -9,10 +14,12 @@
 #include "../spx_res_mgr.h"
 
 static void _spx_web_request_reset() {
+	// 直接调用方：GodotGdspx.requestReset；顶层调用方：浏览器宿主 Module.request_reset()。
 	Spx::reset(0);
 }
 
 static void _spx_web_apply_game_data(const String &p_path, const Vector<String> &p_file_paths) {
+	// 直接调用方：游戏数据 JS 回调或其 deferred 调用；顶层为宿主 updateGameDatas()。
 	SpxEngine *engine = SpxEngine::get_singleton();
 	if (engine != nullptr && engine->get_res() != nullptr) {
 		engine->get_res()->set_game_datas(p_path, p_file_paths);
@@ -20,6 +27,8 @@ static void _spx_web_apply_game_data(const String &p_path, const Vector<String> 
 }
 
 static void _spx_web_game_data_callback(const char *p_path, const char **p_file_paths, int p_size) {
+	// JS Library 在调用期间临时分配 path/argv，返回后立即释放；这里必须先复制成
+	// Godot String/Vector，不能把传入的 WASM 线性内存指针保存到下一帧。
 	String path = String::utf8(p_path);
 	Vector<String> file_paths;
 	for (int i = 0; i < p_size; i++) {
@@ -28,6 +37,8 @@ static void _spx_web_game_data_callback(const char *p_path, const char **p_file_
 
 #ifdef PROXY_TO_PTHREAD_ENABLED
 	if (!Thread::is_main_thread()) {
+		// Emscripten 的 __proxy:'sync' 会把需要 DOM 的 JS 函数代理到浏览器主线程；
+		// 回调重新进入 C++ 时未必处于 Godot 引擎主线程，因此 deferred 回投场景循环。
 		callable_mp_static(_spx_web_apply_game_data).bind(path, file_paths).call_deferred();
 		return;
 	}
@@ -93,10 +104,13 @@ void spx_web_register_callbacks() {
 	SpxEngine::register_runtime_reset_callbacks(godot_js_spx_on_reset_done);
 
 	godot_js_spx_request_reset_cb(&_spx_web_request_reset);
+	// 这两个函数把 C++ 函数指针解析为 JS 可调用函数；其存活期覆盖整个 Web Module。
 	godot_js_spx_game_data_cb(&_spx_web_game_data_callback);
 }
 
 Size2i spx_web_get_window_size() {
+	// 直接调用方：SpxPlatformMgr::get_window_size；顶层为 Go PlatformMgr 查询。
+	// JS 导入同步写入两个 int32 输出槽；线程构建下依赖共享 WebAssembly.Memory。
 	int32_t width = 0;
 	int32_t height = 0;
 	godot_js_spx_window_size_get(&width, &height);

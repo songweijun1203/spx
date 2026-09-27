@@ -110,6 +110,7 @@ static _FORCE_INLINE_ bool read_image_pixel(const Ref<Image> &p_image, const Vec
 }
 
 bool capture(AnimatedSprite2D *p_anim2d, bool p_apply_collision_alpha, Snapshot &r_query) {
+	// 直接调用方：SpxSpriteMgr 的像素/场景颜色查询；只捕获节点状态，不立即回读 CPU 图像。
 	r_query = Snapshot();
 	if (!p_anim2d) {
 		return false;
@@ -135,6 +136,7 @@ bool capture(AnimatedSprite2D *p_anim2d, bool p_apply_collision_alpha, Snapshot 
 }
 
 bool load_image(Snapshot &r_query) {
+	// 包围盒确认相交后再调用 Texture2D::get_image，避免每次感知都产生昂贵的 GPU/CPU 读取。
 	if (r_query.image.is_valid()) {
 		return true;
 	}
@@ -201,6 +203,7 @@ bool Layer::in_front_of(const Layer &p_other) const {
 Color composite(
 		const std::vector<Layer> &p_queries,
 		const Vector2 &p_world_pos) {
+	// 直接调用方：SpxSpriteMgr::_check_scene_color_collision；顶层是 Go TouchingColor。
 	Color composed_color(0.0f, 0.0f, 0.0f, 0.0f);
 	real_t remaining_alpha = 1.0f;
 
@@ -220,7 +223,7 @@ Color composite(
 		remaining_alpha *= 1.0f - sample_color.a;
 	}
 
-	// Scratch blends the remaining transparent area over a white clear color.
+	// Scratch 将剩余透明区域合成到白色清屏底色上。
 	composed_color.r += remaining_alpha;
 	composed_color.g += remaining_alpha;
 	composed_color.b += remaining_alpha;

@@ -40,25 +40,31 @@ class SpxResMgr;
 
 namespace ProjectFonts {
 
+// 一张待加载字体的用户配置；family_key 用于大小写无关的唯一性校验和查表。
 struct FaceSpec {
-	String path;
-	String family;
-	String family_key;
+	String path; // Go 项目配置中的资源路径。
+	String family; // 提供给 Godot/LunaSVG 的显示族名。
+	String family_key; // ASCII 归一化后的内部键。
 };
 
+// 从 ABI 数组解码出的完整字体事务请求，尚未访问文件系统。
 struct Request {
-	String default_path;
-	Vector<FaceSpec> faces;
-	Vector<String> preferences;
+	String default_path; // 必选的默认字体路径。
+	Vector<FaceSpec> faces; // 额外命名字体列表。
+	Vector<String> preferences; // fallback 优先级，元素为规范化 family 键。
 };
 
+// 已完成所有易失败工作的提交包；只有 prepare 全部成功后才交给 SpxResMgr 发布。
 struct Prepared {
-	Vector<uint8_t> default_data;
-	Vector<SpxSvgProjectFontFace> faces;
-	HashMap<String, Ref<FontFile>> display_fonts;
-	Ref<Font> theme_font;
-	Vector<String> preferences;
+	Vector<uint8_t> default_data; // LunaSVG 默认字体的完整字节。
+	Vector<SpxSvgProjectFontFace> faces; // LunaSVG 命名字体快照。
+	HashMap<String, Ref<FontFile>> display_fonts; // Godot UI 使用的字体强引用表。
+	Ref<Font> theme_font; // 按 preferences 组装后的 Godot fallback 链。
+	Vector<String> preferences; // 校验并规范化后的族名顺序。
 };
+
+// 字体事务工具的直接调用方是 SpxResMgr::apply_project_fonts；顶层调用方是 Go
+// game_build -> applyRuntimeFontPlan。准备阶段不修改全局主题，提交阶段必须在主线程完成。
 
 String fold_family(const String &p_family);
 bool strings_from_array(GdArray p_values, const String &p_name, Vector<String> &r_values, String &r_error);

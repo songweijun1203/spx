@@ -34,7 +34,7 @@
 #include "core/io/json.h"
 
 // ============================================================================
-// Helper functions for parsing arrays
+// JSON 数组与 Godot 向量的内部转换，仅由本文件各 from_json/to_json 调用。
 // ============================================================================
 
 static Vector2i _parse_vector2i(const Array &arr) {
@@ -65,6 +65,8 @@ static Array _vector2_to_array(const Vector2 &v) {
 	return arr;
 }
 
+// 以下 from_json/to_json 的直接调用方是相邻上层数据结构；顶层调用方是
+// SpxTilemapparserMgr::load_tilemap，或显式调用 save_to_file 的导出流程。
 bool SpxPhysicsLayerData::from_json(const Dictionary &dict) {
 	collision_layer = dict.get("collision_layer", 1);
 	collision_mask = dict.get("collision_mask", 1);
@@ -320,6 +322,7 @@ Dictionary SpxTileMapData::to_json() const {
 }
 
 bool SpxTileMapData::parse_from_file(const String &json_path, SpxTileMapData &out_data) {
+	// Godot 规则：FileAccess::open 返回引用计数对象；打开失败时 Ref 为空，不抛异常。
 	Ref<FileAccess> file = FileAccess::open(json_path, FileAccess::READ);
 	if (file.is_null()) {
 		ERR_PRINT("SpxTileMapData: Failed to open JSON file: " + json_path);
@@ -338,6 +341,7 @@ bool SpxTileMapData::parse_from_file(const String &json_path, SpxTileMapData &ou
 		return false;
 	}
 
+	// JSON::parse 的根值必须符合本协议的 Dictionary 结构。
 	JSON json;
 	Error err = json.parse(json_content);
 	if (err != OK) {
@@ -355,6 +359,8 @@ bool SpxTileMapData::parse_from_file(const String &json_path, SpxTileMapData &ou
 }
 
 bool SpxTileMapData::save_to_file(const String &json_path) const {
+	// 直接调用方：地图导出工具；顶层调用方：SPX 地图保存工作流。
+	// Godot 规则：WRITE 会创建或截断目标文件，错误通过空 Ref 返回。
 	Ref<FileAccess> file = FileAccess::open(json_path, FileAccess::WRITE);
 	if (file.is_null()) {
 		ERR_PRINT("SpxTileMapData: Failed to create JSON file: " + json_path);

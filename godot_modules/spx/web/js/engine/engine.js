@@ -1,6 +1,9 @@
 /*
  * Godot Web 引擎启动器。
  *
+ * 本文件由 SCsub 覆盖 Godot 上游同名启动器；升级锁定引擎版本时需同步核对上游
+ * Module 配置、启动/退出约定，再保留 SPX 的预下载、小游戏和性能统计扩展。
+ *
  * 浏览器加载最终导出的 engine.js 后，本文件会提供全局 Engine 类。它负责：
  * 1. 下载并实例化 Godot WASM；
  * 2. 保存 Emscripten 返回的 Module；

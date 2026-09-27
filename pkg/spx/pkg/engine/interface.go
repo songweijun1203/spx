@@ -33,6 +33,9 @@ type IManager interface {
 	OnPause(isPaused bool)
 }
 
+// ISpriter 是低层引擎精灵代理的统一接口，负责生命周期、ID、位置和事件回调。
+// 它不是根包 spx.Sprite，也不是 Godot 侧的 SpxSprite 节点；后两者分别属于
+// 游戏逻辑层和 Godot 原生层。具体代理通常通过嵌入 Sprite 来实现本接口。
 type ISpriter interface {
 	ILifeCycle
 	onCreate()

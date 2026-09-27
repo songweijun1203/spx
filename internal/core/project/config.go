@@ -184,6 +184,7 @@ type AniConfig struct {
 	To    any
 }
 
+// SpriteConfig 保存精灵的显示、动画和物理配置。
 type SpriteConfig struct {
 	Heading          float64               `json:"heading"`
 	X                float64               `json:"x"`
@@ -203,17 +204,20 @@ type SpriteConfig struct {
 	DefaultAnimation string                `json:"defaultAnimation"`
 	AnimBindings     map[string]string     `json:"animBindings"`
 
+	// CollisionShapeParams 的格式由 CollisionShapeType 决定：矩形为[宽, 高]，
+	// 圆形为[半径]，胶囊为[半径, 高度]，多边形为[x0, y0, x1, y1, ...]。
 	CollisionShapeParams []float64  `json:"collisionShapeParams"`
-	CollisionMask        *int64     `json:"collisionMask"`
-	CollisionLayer       *int64     `json:"collisionLayer"`
-	CollisionShapeType   string     `json:"collisionShapeType"`
-	CollisionPivot       mathf.Vec2 `json:"collisionPivot"`
+	CollisionMask        *int64     `json:"collisionMask"`      // 碰撞检测掩码。
+	CollisionLayer       *int64     `json:"collisionLayer"`     // 碰撞体所属层。
+	CollisionShapeType   string     `json:"collisionShapeType"` // 碰撞体形状：none、auto、circle、rect、capsule 或 polygon。
+	CollisionPivot       mathf.Vec2 `json:"collisionPivot"`     // 碰撞体相对精灵原点的偏移。
 
+	// TriggerShapeParams 与 CollisionShapeParams 使用相同的参数格式，但用于触发器。
 	TriggerShapeParams []float64  `json:"triggerShapeParams"`
-	TriggerMask        *int64     `json:"triggerMask"`
-	TriggerLayer       *int64     `json:"triggerLayer"`
-	TriggerShapeType   string     `json:"triggerShapeType"`
-	TriggerPivot       mathf.Vec2 `json:"triggerPivot"`
+	TriggerMask        *int64     `json:"triggerMask"`      // 触发检测掩码。
+	TriggerLayer       *int64     `json:"triggerLayer"`     // 触发器所属层。
+	TriggerShapeType   string     `json:"triggerShapeType"` // 触发器形状：none、auto、circle、rect、capsule 或 polygon。
+	TriggerPivot       mathf.Vec2 `json:"triggerPivot"`     // 触发器相对精灵原点的偏移。
 
 	PhysicsMode string   `json:"physicsMode"`
 	Mass        *float64 `json:"mass"`

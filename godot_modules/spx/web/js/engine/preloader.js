@@ -1,6 +1,9 @@
 /*
  * Godot Web 资源预加载器。
  *
+ * 本文件由 SCsub 覆盖 Godot 上游同名预加载器；升级引擎时需同步核对 fetch、
+ * 进度统计和虚拟文件预载契约，再保留 SPX 的小游戏文件系统分支。
+ *
  * 它负责用浏览器 fetch 下载 engine.wasm、PCK/ZIP 等资源，记录下载进度，并把
  * 启动前下载好的文件暂存在 preloadedFiles。Engine.start() 随后把这些文件复制
  * 到 Godot 的虚拟文件系统。

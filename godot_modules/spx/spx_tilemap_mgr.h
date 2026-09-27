@@ -36,16 +36,23 @@
 
 class SpxDrawTiles;
 
+// Go Tilemap Manager 在 Godot 侧的轻量门面，按需创建当前受控的 SpxDrawTiles 节点。
+// 直接调用方：生成的 spx_tilemap_* Native/Web ABI 包装和 SpxEngine 生命周期。
+// 顶层调用方：Go Tilemap API、游戏 reset 或 Godot 进程退出。
+// Godot 规则：draw_tiles 挂入 SceneTree 后由父节点持有；这里只保存借用指针。
 class SpxTilemapMgr : public SpxManager {
 public:
 	void on_destroy() override;
 	void on_reset(int reset_code) override;
 
 private:
+	// 当前受控编辑节点的借用指针；关闭/reset/destroy 会请求 queue_free，而退出编辑模式
+	// 会保留已绘制节点并仅放弃该指针，后续重新打开可创建新的受控节点。
 	SpxDrawTiles *draw_tiles = nullptr;
 	SpxDrawTiles *_ensure_draw_tiles();
 
 public:
+	// SPX_BIND 方法直接由 ABI 调用；顶层均来自 Go engine.TilemapMgr。
 	SPX_BIND void open_draw_tiles_with_size(GdInt tile_size);
 	SPX_BIND void open_draw_tiles();
 	SPX_BIND void set_layer_index(GdInt index);

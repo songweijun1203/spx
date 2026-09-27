@@ -32,7 +32,13 @@
 
 #include "core/math/vector2i.h"
 
+// Web 平台 C++ 入口：安装 Godot C++ -> Emscripten JS Library -> Go WASM 的回调表。
+// 直接调用方：initialize_spx_module(CORE)；顶层调用方：Engine.start -> Module.callMain。
+// Emscripten 规则：这些函数只在 Web 构建链接，JS 导入符号必须已合并进最终 Module。
 void spx_web_register_callbacks();
+
+// 直接调用方：SPX 平台/窗口初始化；顶层调用方：Go 对舞台尺寸的查询。
+// 浏览器 Canvas 尺寸由 JS 宿主掌握，因此经导入函数读取，不能假设等于 DisplayServer 尺寸。
 Size2i spx_web_get_window_size();
 
 #endif // SPX_WEB_BRIDGE_H

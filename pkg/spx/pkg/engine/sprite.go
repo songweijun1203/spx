@@ -16,8 +16,11 @@
 
 package engine
 
+// Sprite 是 pkg/spx/pkg/engine 层的基础精灵代理实现。
+// 它实现 ISpriter；项目生成的精灵类型可以嵌入它，从而继承引擎生命周期和事件能力。
+// 该类型只保存 Go 侧代理状态，真正的节点和渲染数据由 SpriteMgr/Godot 管理。
 type Sprite struct {
-	Id                       Object
+	Id                       Object //这个id其实是godot侧存储精灵的map的key值？理解有问题吗
 	OnTriggerEnterEvent      *Event1[ISpriter]
 	OnTriggerExitEvent       *Event1[ISpriter]
 	OnScreenExitedEvent      *Event0
@@ -29,6 +32,9 @@ type Sprite struct {
 	OnAnimationFinishedEvent *Event0
 	OnVfxFinishedEvent       *Event0
 }
+
+// 编译期确认：基础 Sprite 必须实现低层精灵协议。
+var _ ISpriter = (*Sprite)(nil)
 
 func (pself *Sprite) onCreate() {
 	pself.OnTriggerEnterEvent = NewEvent1[ISpriter]()
@@ -121,6 +127,11 @@ func (pself *Sprite) Destroy() bool {
 }
 func (pself *Sprite) OnStart() {
 }
+
+// OnUpdate 是低层 Go 精灵代理的普通帧生命周期默认实现。
+// internal/engine.Sprite 嵌入本类型，因而普通 SpriteImpl 的 Godot 代理默认也使用
+// 这个空钩子。位置、服装、可见性等业务状态不在这里逐个更新，而由 Game 的
+// SpriteSyncBuffer 路径批量同步；具体代理类型仍可自行实现 OnUpdate 覆盖该行为。
 func (pself *Sprite) OnUpdate(delta float64) {
 }
 func (pself *Sprite) OnFixedUpdate(delta float64) {

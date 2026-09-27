@@ -33,8 +33,8 @@
 #include "core/os/keyboard.h"
 #include "spx_engine.h"
 
-// Printable Unicode is normalized through fix_keycode() so shifted symbols
-// such as '!' map correctly before falling back to label, logical, then physical keycodes.
+// 可打印 Unicode 先经 fix_keycode 归一化，使 Shift 组合字符（如 !）得到稳定键码；
+// 无 Unicode 时依次退回键盘标签、逻辑键码和物理键码。
 static GdInt normalize_key_event_code(const Ref<InputEventKey> &p_event) {
 	const char32_t unicode = p_event->get_unicode();
 	if (unicode >= 0x20 && unicode != 0x7F) {
@@ -51,17 +51,21 @@ static GdInt normalize_key_event_code(const Ref<InputEventKey> &p_event) {
 }
 
 void SpxInputProxy::ready() {
+	// 直接调用方：SpxInputMgr::on_start。Godot 只有启用 process_input 的入树 Node
+	// 才会从 Viewport 收到 input 回调。
 	set_process_input(true);
 }
 
 void SpxInputProxy::input(const Ref<InputEvent> &p_event) {
+	// 直接调用方：Godot Viewport 输入传播；顶层来源：操作系统/浏览器键鼠事件。
+	// SPX_CALLBACK 立即把事件送往 Go 的事件缓存，用户协程由 Go 事件循环稍后调度。
 	Ref<InputEventKey> k = p_event;
 	if (k.is_valid()) {
 		const GdInt keyid = normalize_key_event_code(k);
 		if (k->is_pressed()) {
-			SPX_CALLBACK->func_on_key_pressed(keyid);
+			SPX_CALLBACK->func_on_key_pressed(keyid);  //键盘摁下
 		} else if (k->is_released()) {
-			SPX_CALLBACK->func_on_key_released(keyid);
+			SPX_CALLBACK->func_on_key_released(keyid); //键盘谈起
 		}
 		return;
 	}
@@ -72,8 +76,8 @@ void SpxInputProxy::input(const Ref<InputEvent> &p_event) {
 	}
 
 	if (mb->is_pressed()) {
-		SPX_CALLBACK->func_on_mouse_pressed((GdInt)mb->get_button_index());
+		SPX_CALLBACK->func_on_mouse_pressed((GdInt)mb->get_button_index()); //鼠标摁下
 	} else if (mb->is_released()) {
-		SPX_CALLBACK->func_on_mouse_released((GdInt)mb->get_button_index());
+		SPX_CALLBACK->func_on_mouse_released((GdInt)mb->get_button_index()); //鼠标弹起
 	}
 }

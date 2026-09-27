@@ -60,21 +60,27 @@
 #include "web/spx_web_session.h"
 #endif
 
+// 直接调用方：Web spx_web_register_callbacks()（以及生命周期测试）；顶层调用方：Web 模块 CORE 初始化。
+// 保存的是借用函数指针，panic 消息只在同步回调期间有效。
 void SpxEngine::register_runtime_panic_callbacks(GDExtensionSpxGlobalRuntimePanicCallback callback) {
 	_register_runtime_callback(&SpxEngine::on_runtime_panic, callback, __func__);
 }
 
+// 直接调用方：Web spx_web_register_callbacks()（以及生命周期测试）；顶层调用方：Web 模块 CORE 初始化。
 void SpxEngine::register_runtime_exit_callbacks(GDExtensionSpxGlobalRuntimeExitCallback callback) {
 	_register_runtime_callback(&SpxEngine::on_runtime_exit, callback, __func__);
 }
 
+// 直接调用方：Web spx_web_register_callbacks()（以及生命周期测试）；顶层调用方：Web 模块 CORE 初始化。
 void SpxEngine::register_runtime_reset_callbacks(GDExtensionSpxGlobalRuntimeResetCallback callback) {
 	_register_runtime_callback(&SpxEngine::on_runtime_reset, callback, __func__);
 }
 
 // 创建进程内唯一的 SpxEngine，并创建其持有的全部 C++ Manager。
-// Web 最近调用方：spx_web_register_callbacks()；Native 最近调用方：gdspx_init()。
-// Web 最顶层入口：engine.js -> Module.callMain() -> initialize_spx_module(CORE)。
+// Web 直接调用方：spx_web_register_callbacks()；Native 直接调用方：生成的
+// gdextension_spx_global_register_callbacks()。
+// 顶层调用方：Web 为 engine.js -> Module.callMain() -> initialize_spx_module(CORE)；
+// Native 为 Godot GDExtension 加载器 -> Go gdspx_init() -> registerEngineCallback()。
 void SpxEngine::register_callbacks(GDExtensionSpxCallbackInfoPtr callback_ptr) {
 	if (singleton != nullptr) {
 		print_error("SpxEngine::register_callbacks failed, already initialized!");
@@ -88,6 +94,9 @@ void SpxEngine::register_callbacks(GDExtensionSpxCallbackInfoPtr callback_ptr) {
 	singleton->should_execute_single_frame = false;
 }
 
+// 销毁唯一引擎实例，并保证 Go 的 destroy/destroyed 回调包围 C++ 资源清理。
+// 直接调用方：Spx::on_destroy()；顶层调用方：Godot 主循环 destroy 或模块反初始化。
+// 必须在 Godot 主线程执行，因为 Manager 清理会操作 SceneTree 节点。
 void SpxEngine::shutdown() {
 	if (singleton == nullptr || singleton->shutting_down) {
 		return;
@@ -111,6 +120,7 @@ SpxCallbackInfo *SpxEngine::get_callbacks() {
 	return &callbacks;
 }
 
+// 生成进程内唯一对象 ID。直接调用方：SpxManager::get_unique_id()；顶层调用方：Go 创建对象 API。
 GdInt SpxEngine::get_unique_id() {
 	return global_id++;
 }
@@ -130,6 +140,9 @@ Window *SpxEngine::get_root() {
 	return tree->get_root();
 }
 
+// 绑定 Godot 主循环与 SPX 场景锚点，并把延迟回调代理挂到根 Window。
+// 直接调用方：Spx::on_start()；顶层调用方：Godot 主循环 start 阶段。
+// Godot 规定：Node 必须在主线程 add_child；加入树后其所有权和通知由 SceneTree 管理。
 void SpxEngine::set_root_node(SceneTree *p_tree, Node *p_node) {
 	tree = p_tree;
 	spx_root = p_node;
@@ -206,6 +219,9 @@ void SpxEngine::on_update(float delta) {
 	}
 }
 
+// 断开定时器、释放场景辅助节点并逆序销毁 Managers。
+// 直接调用方：shutdown()；顶层调用方：Godot 主循环 destroy/模块反初始化。
+// Godot 规定：已挂入 SceneTree 的 Node 使用 queue_free() 延迟到安全时机释放。
 void SpxEngine::on_destroy() {
 	_disconnect_reset_timer();
 	clear_frozen_frame();
@@ -231,6 +247,8 @@ void SpxEngine::on_destroy() {
 	spx_root = nullptr;
 }
 
+// 进入不可恢复的进程退出状态并停止常规 runtime 回调。
+// 直接调用方：SpxExtMgr::request_exit()；顶层调用方：Go runtime RequestExit。
 void SpxEngine::on_exit(int exit_code) {
 	if (has_exit) {
 		return;
@@ -240,7 +258,7 @@ void SpxEngine::on_exit(int exit_code) {
 
 	_notify_managers(&SpxManager::on_exit, exit_code);
 
-	// Stop runtime events now; shutdown still owns both teardown callbacks.
+	// 立即停止普通 runtime 事件；最终 shutdown 仍保留并负责 destroy/destroyed 两个收尾回调。
 	const auto on_engine_destroy = callbacks.func_on_engine_destroy;
 	const auto on_engine_destroyed = callbacks.func_on_engine_destroyed;
 	callbacks = get_default_spx_callbacks();
@@ -283,9 +301,12 @@ void SpxEngine::restart() {
 }
 
 void SpxEngine::set_delay_runtime_reset(bool p_delay) {
+	// 当前生产代码暂无直接调用方，作为平台启动层的策略开关保留；顶层需求是 Web 重置末帧展示。
 	should_delay_runtime_reset = p_delay;
 }
 
+// 把当前 Viewport 截图覆盖到独立 CanvasLayer，避免 Web 重置期间画面闪空。
+// 直接调用方：on_reset()；顶层调用方：Go runtime reset/退出请求。
 void SpxEngine::capture_last_frame() {
 	if (is_frozen_frame || !tree) {
 		return;
@@ -301,6 +322,9 @@ void SpxEngine::capture_last_frame() {
 	is_frozen_frame = true;
 }
 
+// 移除重置等待期的截图节点。
+// 直接调用方：restart()/on_destroy()；顶层调用方：新一局启动或 Godot 退出。
+// queue_free() 是 Godot 对树内 Node 的安全释放方式，实际删除在当前帧末尾发生。
 void SpxEngine::clear_frozen_frame() {
 	if (!is_frozen_frame) {
 		return;
@@ -319,6 +343,8 @@ void SpxEngine::clear_frozen_frame() {
 	is_frozen_frame = false;
 }
 
+// 暂停 Godot SceneTree 并同步 SPX 状态。
+// 直接调用方：Spx::pause()；顶层调用方：Go engine 暂停 API；必须在 Godot 主线程执行。
 void SpxEngine::pause() {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	if (tree) {
@@ -327,6 +353,8 @@ void SpxEngine::pause() {
 	}
 }
 
+// 恢复 Godot SceneTree 并通知各 Manager。
+// 直接调用方：Spx::resume()；顶层调用方：Go engine 恢复 API；必须在 Godot 主线程执行。
 void SpxEngine::resume() {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	if (tree) {
@@ -339,6 +367,8 @@ bool SpxEngine::is_paused() const {
 	return is_spx_paused;
 }
 
+// 暂时解除 SceneTree 暂停，让下一个主循环帧通过，随后 on_update() 清除单帧标记。
+// 直接调用方：Spx::next_frame()；顶层调用方：Go 调试单步 API；必须在主线程执行。
 void SpxEngine::next_frame() {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	if (is_spx_paused && tree) {
@@ -347,6 +377,8 @@ void SpxEngine::next_frame() {
 	}
 }
 
+// 执行本局重置：先回调 Go 清理游戏对象，再清理 Managers，最后通知宿主完成重置。
+// 直接调用方：on_reset()；顶层调用方：Go runtime reset/退出请求。
 void SpxEngine::_do_reset(int reset_code) {
 	if (callbacks.func_on_engine_reset) {
 		callbacks.func_on_engine_reset();
@@ -361,6 +393,8 @@ void SpxEngine::_do_reset(int reset_code) {
 	}
 }
 
+// 立即暂停场景树并同步通知宿主 reset 完成。
+// 直接调用方：_do_reset() 或延迟 timer lambda；顶层调用方：Go/Web 重置流程。
 void SpxEngine::_invoke_runtime_reset(int reset_code) {
 	_set_paused_pure(true);
 	auto callback = get_on_runtime_reset();
@@ -369,6 +403,9 @@ void SpxEngine::_invoke_runtime_reset(int reset_code) {
 	}
 }
 
+// 使用 Godot SceneTreeTimer 延迟 reset 完成通知，使冻结末帧能在浏览器中保持一段时间。
+// 直接调用方：_do_reset()；顶层调用方：启用了延迟策略的 Web 重置流程。
+// Godot 规则：signal 的 Callable 目标必须是仍然存活的 Object，因此由树内 delay_proxy 承接。
 void SpxEngine::_invoke_runtime_reset_delayed(int reset_code) {
 	if (!tree || !delay_proxy) {
 		return;
@@ -382,6 +419,8 @@ void SpxEngine::_invoke_runtime_reset_delayed(int reset_code) {
 	reset_timer->connect("timeout", on_timeout_callable);
 }
 
+// 主动断开 timer signal 并释放捕获，避免销毁后 Callable 再进入已失效的 SpxEngine。
+// 直接调用方：restart()/on_destroy()/_invoke_runtime_reset_delayed()。
 void SpxEngine::_disconnect_reset_timer() {
 	if (reset_timer.is_valid() && reset_timer->is_connected("timeout", on_timeout_callable)) {
 		reset_timer->disconnect("timeout", on_timeout_callable);
@@ -392,6 +431,8 @@ void SpxEngine::_disconnect_reset_timer() {
 	}
 }
 
+// 统一处理 Godot pause 状态变化并广播到邮箱、Managers 和 Go 回调。
+// 直接调用方：pause()/resume()；顶层调用方：Go engine 控制 API。
 void SpxEngine::_on_godot_pause_changed(bool is_godot_paused) {
 	if (is_godot_paused != is_spx_paused) {
 		is_spx_paused = is_godot_paused;
@@ -405,6 +446,8 @@ void SpxEngine::_on_godot_pause_changed(bool is_godot_paused) {
 	}
 }
 
+// 只同步底层暂停状态，不发 Manager/Go pause 回调，供 reset/restart 内部状态切换使用。
+// 直接调用方：restart()/_invoke_runtime_reset()；必须在 Godot 主线程执行。
 void SpxEngine::_set_paused_pure(bool p_paused) {
 	ERR_FAIL_COND(!Thread::is_main_thread());
 	if (tree) {
@@ -414,6 +457,8 @@ void SpxEngine::_set_paused_pure(bool p_paused) {
 	Spx::pending_controls.set_paused(p_paused);
 }
 
+// 从根 Viewport 读取当前渲染结果；直接调用方：capture_last_frame()。
+// Godot 规则：窗口不可绘制时 ViewportTexture 可能没有可用图像，调用方需接受空 Ref。
 Ref<Image> SpxEngine::_get_viewport_image() const {
 	Viewport *vp = tree->get_root();
 	if (!vp) {
@@ -428,6 +473,7 @@ Ref<Image> SpxEngine::_get_viewport_image() const {
 	return vp->get_texture()->get_image();
 }
 
+// 根据截图构造铺满 Viewport 的 TextureRect；直接调用方：capture_last_frame()。
 TextureRect *SpxEngine::_create_freeze_texture(const Ref<Image> &img) const {
 	Ref<ImageTexture> tex = ImageTexture::create_from_image(img);
 	TextureRect *screen = memnew(TextureRect);
@@ -438,6 +484,8 @@ TextureRect *SpxEngine::_create_freeze_texture(const Ref<Image> &img) const {
 	return screen;
 }
 
+// 把冻结画面挂入根 Viewport；直接调用方：capture_last_frame()。
+// add_child 后节点归 SceneTree 生命周期管理，后续只通过 queue_free() 请求删除。
 void SpxEngine::_attach_freeze_node(TextureRect *screen) {
 	Viewport *vp = tree->get_root();
 	if (!vp || !screen) {
@@ -453,6 +501,8 @@ void SpxEngine::_attach_freeze_node(TextureRect *screen) {
 	freeze_layer->add_child(screen);
 }
 
+// 按依赖顺序创建所有 C++ Manager。
+// 直接调用方：register_callbacks()；顶层调用方：Native gdspx_init()/Web 模块 CORE 初始化。
 void SpxEngine::_initialize_managers() {
 	input = _create_manager<SpxInputMgr>();
 	audio = _create_manager<SpxAudioMgr>();
@@ -473,6 +523,8 @@ void SpxEngine::_initialize_managers() {
 	tilemapparser = _create_manager<SpxTilemapparserMgr>();
 }
 
+// 按创建逆序释放 Managers，并清空全部非拥有型快捷指针。
+// 直接调用方：on_destroy()；顶层调用方：Godot 主循环 destroy/模块反初始化。
 void SpxEngine::_destroy_all_managers() {
 	for (int i = managers.size() - 1; i >= 0; --i) {
 		memdelete(managers[i]);

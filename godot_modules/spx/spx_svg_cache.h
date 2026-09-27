@@ -6,10 +6,12 @@
 #include "scene/resources/image_texture.h"
 #include "scene/resources/sprite_frames.h"
 
-// Owned by SpxResMgr. Paths entering this cache are already engine paths.
+// SVG 多倍率缓存，由 SpxResMgr 独占。传入路径已转换为 Godot 引擎路径。
+// 直接调用方是 SpxResMgr/SpxSprite；顶层需求来自 Go 的 SVG 服装、动画缩放和热重载。
+// Ref 强引用保证纹理/帧资源在缓存或使用者仍持有时有效；clear 只释放缓存自己的引用。
 class SpxSvgCache {
-	HashMap<String, HashMap<int, Ref<ImageTexture>>> images;
-	HashMap<String, HashMap<int, Ref<SpriteFrames>>> animations;
+	HashMap<String, HashMap<int, Ref<ImageTexture>>> images; // 路径 -> 栅格倍率 -> 单图纹理。
+	HashMap<String, HashMap<int, Ref<SpriteFrames>>> animations; // 动画键 -> 倍率 -> 派生帧资源。
 
 public:
 	static bool is_svg_path(const String &p_path);

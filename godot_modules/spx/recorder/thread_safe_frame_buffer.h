@@ -14,17 +14,17 @@
 #include "core/os/os.h"
 #include <atomic>
 
-/**
- * Thread-safe double-buffered frame data manager.
- * Implements safe data exchange between the game's main thread and the recording thread.
- */
+// 游戏主线程与独立视频线程之间的双缓冲交换器。
+// 直接调用方：ObsStyleMovieWriter::add_realtime_frame（写）和 IndependentVideoRecorder（读）；
+// 顶层调用方：Godot 每帧回调或 Go 手动录制流程。
+// Godot 规则：Ref<Image> 的引用计数负责图像保活，但缓冲槽切换仍必须由 Mutex 保证一致快照。
 class ThreadSafeFrameBuffer {
 public:
 	struct FrameData {
-		Ref<Image> image; // Image data
-		uint64_t game_timestamp; // Game timestamp (microseconds)
-		uint32_t frame_sequence; // Game frame sequence number
-		bool is_new_frame = false; // Whether it is a new frame
+		Ref<Image> image; // 引用计数的画面快照。
+		uint64_t game_timestamp; // 游戏提交时间（微秒）。
+		uint32_t frame_sequence; // 游戏帧单调序号。
+		bool is_new_frame = false; // 相对上次读取是否为新画面。
 
 		FrameData() :
 				game_timestamp(0), frame_sequence(0), is_new_frame(false) {}
@@ -44,57 +44,40 @@ public:
 	};
 
 private:
-	// Double buffer
-	FrameData buffer_a;
-	FrameData buffer_b;
-	bool writing_to_a = true; // Game thread writing flag
+	FrameData buffer_a; // 双缓冲槽 A。
+	FrameData buffer_b; // 双缓冲槽 B。
+	bool writing_to_a = true; // 主线程当前写入槽；另一槽供录制线程稳定读取。
 
-	// Synchronization control
-	mutable Mutex buffer_mutex; // Buffer switching protection
-	std::atomic<bool> has_new_data{ false }; // New data flag
-	std::atomic<uint32_t> last_sequence{ 0 }; // Last processed sequence number
+	// 跨线程同步状态。
+	mutable Mutex buffer_mutex; // 保护写入、槽切换和一致快照复制。
+	std::atomic<bool> has_new_data{ false }; // 是否存在尚未消费的新帧。
+	std::atomic<uint32_t> last_sequence{ 0 }; // 最近消费的序号。
 
-	// Statistics
-	std::atomic<uint64_t> total_updates{ 0 };
-	std::atomic<uint64_t> buffer_switches{ 0 };
+	// 无锁读取的累计统计。
+	std::atomic<uint64_t> total_updates{ 0 }; // 主线程提交次数。
+	std::atomic<uint64_t> buffer_switches{ 0 }; // 成功切换稳定槽次数。
 
 public:
 	ThreadSafeFrameBuffer();
 	~ThreadSafeFrameBuffer();
 
-	/**
-	 * Called by the game thread: update the frame.
-	 * @param new_frame New image frame
-	 * @param timestamp Game timestamp
-	 * @param sequence Game frame sequence number
-	 */
+	// 仅由游戏主线程提交画面；new_frame 通过 Ref 在录制线程读取期间保活。
 	void update_frame(const Ref<Image> &new_frame, uint64_t timestamp, uint32_t sequence);
 
-	/**
-	 * Called by the recording thread: get the stable frame.
-	 * @return Current stable frame data
-	 */
+	// 仅由录制线程取得稳定快照，返回值不暴露内部缓冲槽引用。
 	FrameData get_current_frame() const;
 
-	/**
-	 * Check if there is new data.
-	 */
+	// 是否存在尚未被录制线程消费的新画面。
 	bool has_new_frame() const { return has_new_data.load(); }
 
-	/**
-	 * Get the last processed sequence number.
-	 */
+	// 最近一次稳定读取的游戏帧序号。
 	uint32_t get_last_sequence() const { return last_sequence.load(); }
 
-	/**
-	 * Get statistics.
-	 */
+	// 双缓冲累计统计。
 	uint64_t get_total_updates() const { return total_updates.load(); }
 	uint64_t get_buffer_switches() const { return buffer_switches.load(); }
 
-	/**
-	 * Reset the buffer.
-	 */
+	// 清空两个槽及原子状态；只能在录制线程停止后调用。
 	void reset();
 };
 

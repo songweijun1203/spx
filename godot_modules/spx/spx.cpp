@@ -49,7 +49,9 @@
 #include "spx_ui.h"
 #include "spx_list_monitor.h"
 
-// Simple node class for initialization
+// SPX 在 SceneTree 中的锚点节点。
+// SpxEngine 创建的 Manager 根节点都挂在其下；节点所有权交给 SceneTree，退出时由 Godot
+// 随树释放。Godot 规定 Node 只有加入 SceneTree 后才能可靠访问树、Viewport 和场景生命周期。
 class SpxEngineNode : public Node {
 	GDCLASS(SpxEngineNode, Node);
 };
@@ -57,20 +59,25 @@ class SpxEngineNode : public Node {
 #define SPX_ENGINE SpxEngine::get_singleton()
 
 namespace {
+// 主循环阶段总线的进程级注册句柄；只记录注册关系，不拥有总线或回调对象。
 MainLoopPhaseCallbackBus::RegistrationID main_loop_callback_registration = MainLoopPhaseCallbackBus::INVALID_REGISTRATION_ID;
 
+// 直接调用方：MainLoopPhaseCallbackBus；顶层调用方：Godot 主循环 start 阶段。
 void _spx_main_loop_start(void *, MainLoop *p_main_loop) {
 	Spx::on_start(p_main_loop);
 }
 
+// 直接调用方：MainLoopPhaseCallbackBus；顶层调用方：Godot 物理帧循环。
 void _spx_main_loop_fixed_update(void *, double p_delta) {
 	Spx::on_fixed_update(p_delta);
 }
 
+// 直接调用方：MainLoopPhaseCallbackBus；顶层调用方：Godot 每帧逻辑循环。
 void _spx_main_loop_update(void *, double p_delta) {
 	Spx::on_update(p_delta);
 }
 
+// 直接调用方：MainLoopPhaseCallbackBus；顶层调用方：Godot 主循环销毁流程。
 void _spx_main_loop_destroy(void *) {
 	Spx::on_destroy();
 }
@@ -89,6 +96,8 @@ void Spx::register_extension_functions() {
 	// Module CORE initialization runs immediately before Godot builds the base
 	// GDExtension interface table. Register the SPX-owned entries here so core
 	// no longer needs an SPX callback or alias functions.
+	// CORE 初始化紧邻 Godot 构造基础 GDExtension 接口表；在这里插入 SPX 自有接口，
+	// Godot core 就不必再依赖 SPX 专用回调或别名函数。
 	gdextension_spx_setup_interface();
 	extension_functions_registered = true;
 }
@@ -97,6 +106,8 @@ void Spx::unregister_extension_functions() {
 	// Godot's GDExtension interface registry is process-scoped and has no
 	// matching removal API. Keep this guard set so a module reinitialization
 	// cannot try to insert the same SPX function names a second time.
+	// Godot 规则：GDExtension 接口注册表是进程级的且没有移除 API；这里故意不清除标志，
+	// 防止测试或模块重载时重复插入同名接口。
 }
 
 // 把 SPX 的 start/fixed_update/update/destroy 接到 Godot 主循环阶段总线。
@@ -124,11 +135,15 @@ void Spx::unregister_main_loop_callbacks() {
 	main_loop_callback_registration = MainLoopPhaseCallbackBus::INVALID_REGISTRATION_ID;
 }
 
+// 直接调用方：SpxDebugMgr 的调试 API；顶层调用方：Go 侧调试配置。
+// 同步通知碰撞调试覆盖层，使既有节点立即反映新模式。
 void Spx::set_debug_mode(bool enable) {
 	debug_mode = enable;
 	spx_collision_debug_mode_changed(enable);
 }
 
+// 直接调用方：initialize_spx_module(SCENE)；顶层调用方：Godot 模块初始化框架。
+// Godot 规定：可实例化/可反射的 Object 派生类须先向 ClassDB 注册；internal 类型不暴露给用户。
 void Spx::register_types() {
 	ClassDB::register_class<SpxListMonitor>();
 	ClassDB::register_class<SpxSprite>();
@@ -186,6 +201,7 @@ void Spx::on_update(double delta) {
 
 	// Consume each phase immediately before execution. Requests made by a
 	// callback for a later phase still run in this update, as before.
+	// 每个阶段都在执行前即时取走命令，因此前一阶段回调新提交的后续阶段命令仍可在本帧执行。
 	if (pending_controls.take(SpxPendingControls::RESTART)) {
 		SPX_ENGINE->restart();
 		return;
@@ -220,6 +236,8 @@ void Spx::on_destroy() {
 	}
 }
 
+// 直接调用方：SpxExtMgr::request_reset() 或 Web 会话恢复逻辑；顶层调用方：Go runtime 退出/重置请求。
+// Godot 规则：SceneTree 和 Node 只能在主线程变更，因此工作线程仅投递命令。
 void Spx::reset(int exit_code) {
 	if (!Thread::is_main_thread()) {
 		pending_controls.submit(SpxPendingControls::RESET, exit_code);
@@ -230,6 +248,7 @@ void Spx::reset(int exit_code) {
 	}
 }
 
+// 直接调用方：SpxExtMgr::request_restart()；顶层调用方：Go/Web 新一局启动流程。
 void Spx::restart() {
 	if (!Thread::is_main_thread()) {
 		pending_controls.submit(SpxPendingControls::RESTART);
@@ -240,6 +259,7 @@ void Spx::restart() {
 	}
 }
 
+// 直接调用方：SpxExtMgr::pause()；顶层调用方：Go engine 控制 API。
 void Spx::pause() {
 	if (!Thread::is_main_thread()) {
 		pending_controls.submit(SpxPendingControls::PAUSE);
@@ -250,6 +270,7 @@ void Spx::pause() {
 	}
 }
 
+// 直接调用方：SpxExtMgr::resume()；顶层调用方：Go engine 控制 API。
 void Spx::resume() {
 	if (!Thread::is_main_thread()) {
 		pending_controls.submit(SpxPendingControls::RESUME);
@@ -260,6 +281,7 @@ void Spx::resume() {
 	}
 }
 
+// 直接调用方：SpxExtMgr::next_frame()；顶层调用方：Go 调试单步 API。
 void Spx::next_frame() {
 	if (!Thread::is_main_thread()) {
 		pending_controls.submit(SpxPendingControls::NEXT_FRAME);
@@ -271,5 +293,6 @@ void Spx::next_frame() {
 }
 
 bool Spx::is_paused() {
+	// 直接调用方：SpxExtMgr::is_paused()；顶层调用方：Go engine 暂停状态查询。
 	return pending_controls.is_paused();
 }

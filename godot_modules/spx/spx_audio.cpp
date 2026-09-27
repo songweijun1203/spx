@@ -41,6 +41,8 @@
 #include "spx_res_mgr.h"
 
 AudioStreamPlayer2D *SpxAudio::_get_aid_audio(GdInt aid) const {
+	// Godot Node 可能因父节点销毁或 queue_free 在帧尾释放；每次使用前通过
+	// ObjectDB 重新解析 ObjectID，避免跨帧解引用悬空裸指针。
 	const Voice *voice = voices.getptr(aid);
 	if (voice == nullptr) {
 		return nullptr;
@@ -51,8 +53,7 @@ AudioStreamPlayer2D *SpxAudio::_get_aid_audio(GdInt aid) const {
 
 void SpxAudio::_release_voice(GdInt aid) {
 	AudioStreamPlayer2D *player = _get_aid_audio(aid);
-	// Remove the handle before interacting with the scene-owned player. All
-	// cleanup paths are also safe after its parent has already deleted it.
+	// 先移除句柄再操作场景树拥有的播放器，使父节点已提前释放时清理仍可重入。
 	voices.erase(aid);
 	if (player != nullptr) {
 		player->stop();
@@ -61,6 +62,7 @@ void SpxAudio::_release_voice(GdInt aid) {
 }
 
 void SpxAudio::on_create(GdInt p_id, Node *p_root) {
+	// 直接调用方：SpxObjectMgr::_create_object；顶层为 Go AudioMgr.CreateAudio。
 	root_id = p_root != nullptr ? p_root->get_instance_id() : ObjectID();
 	bus_name = SpxAudioBusPool::STR_BUS_SFX;
 	owns_dedicated_bus = false;
@@ -77,6 +79,8 @@ void SpxAudio::on_destroy() {
 }
 
 void SpxAudio::on_update(float delta) {
+	// 直接调用方：SpxAudioMgr::on_update；顶层为 Godot 每帧主循环。
+	// AudioStreamPlayer2D 播放完成不会自动从场景树移除，这里回收非循环实例。
 	Vector<GdInt> finished_aids;
 	for (const KeyValue<GdInt, Voice> &entry : voices) {
 		AudioStreamPlayer2D *player = _get_aid_audio(entry.key);
@@ -96,8 +100,9 @@ void SpxAudio::on_update(float delta) {
 }
 
 void SpxAudio::on_reset(int reset_code) {
+	// 直接调用方：SpxAudioMgr reset/destroy；顶层为 Go 重置/结束游戏。
 	stop_all();
-	// free the bus
+	// 专用总线是从池中租用的；共享 Sfx 总线不归当前对象所有，不能释放。
 	if (owns_dedicated_bus) {
 		audioPool->free(bus_name);
 	}
@@ -106,6 +111,7 @@ void SpxAudio::on_reset(int reset_code) {
 }
 
 bool SpxAudio::play(GdInt aid, GdString path, Node *owner, GdFloat attenuation, GdFloat max_distance) {
+	// 直接调用方：SpxAudioMgr::play_with_attenuation；顶层为 Go 播放声音 API。
 	auto path_str = SpxStr(path);
 	Ref<AudioStream> stream = resMgr->load_audio(path_str);
 	if (stream.is_null()) {
@@ -117,6 +123,8 @@ bool SpxAudio::play(GdInt aid, GdString path, Node *owner, GdFloat attenuation, 
 	}
 	_release_voice(aid);
 	auto *audio = memnew(AudioStreamPlayer2D);
+	// Godot 规则：memnew 的 Node 必须 add_child 才由场景树接管；之后用 queue_free
+	// 延迟到安全阶段删除，不在播放/回调栈内直接 memdelete。
 	parent->add_child(audio);
 	audio->set_bus(bus_name);
 	audio->set_stream(stream);
@@ -184,7 +192,7 @@ void SpxAudio::set_timer(GdInt aid, GdFloat time) {
 
 void SpxAudio::set_pitch(GdFloat pitch) {
 	cur_pitch = pitch;
-	// is need to update the pitch of the all audios ?
+	// 当前语义只影响之后创建的播放器，不回写正在播放的 voice。
 }
 
 GdFloat SpxAudio::get_pitch() {
@@ -214,6 +222,8 @@ GdFloat SpxAudio::get_volume() {
 }
 
 bool SpxAudio::ensure_dedicated_bus() {
+	// 对象第一次设置音量/声像时按需租总线，并把已播放 voice 一并迁移，
+	// 从而不影响仍在共享 Sfx 总线上的其他 SPX 音频对象。
 	if (!owns_dedicated_bus) {
 		const StringName allocated_bus = audioPool->alloc();
 		if (allocated_bus.is_empty()) {

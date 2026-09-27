@@ -37,11 +37,14 @@
 #include "spx_ui_binding.h"
 class Node;
 class CanvasLayer;
+// UI 系统门面：在独立 CanvasLayer 中创建/绑定 Control，以 Go ID 路由属性操作并回传点击事件。
+// SPX_BIND 的直接调用方是生成的 C/JS-WASM 桥；顶层调用方是 Go internal/ui 的气泡、
+// 提问框、变量/列表监视器和公开 UINode API。所有节点操作必须发生在 Godot 主线程。
 class SpxUiMgr : public SpxManager, private SpxUiBindingListener {
 
 private:
-	RBMap<GdObj, SpxUi *> id_objects;
-	CanvasLayer *canvas_layer = nullptr;
+	RBMap<GdObj, SpxUi *> id_objects; // Manager 拥有 SpxUi 包装器；Control 仍由场景树拥有。
+	CanvasLayer *canvas_layer = nullptr; // SPX UI 的场景树根，借用指针；确保 UI 不受 2D 相机影响。
 
 	Control *create_control(GdString path);
 	void _clear_nodes(bool emit_destroyed, bool queue_controls);
@@ -51,6 +54,7 @@ private:
 	void on_spx_ui_destroyed(GdObj p_gid, ObjectID p_binding_id) override;
 
 public:
+	// 生命周期由 SpxEngine 调用；reset 会解除绑定并用 queue_free 延迟销毁自建 Control。
 	void on_awake() override;
 	void on_destroy() override;
 	void on_reset(int reset_code) override;
@@ -61,6 +65,7 @@ public:
 	static ESpxUiType get_node_type(Node *obj);
 
 public:
+	// SPX_BIND 接口直接由 ABI/Web 桥调用，顶层来自 Go UiMgr/UINode 与 internal/ui。
 	SPX_BIND GdObj bind_node(GdObj obj, GdString rel_path);
 
 	SPX_BIND GdObj create_node(GdString path);

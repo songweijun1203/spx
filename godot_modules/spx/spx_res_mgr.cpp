@@ -54,6 +54,8 @@
 #include "spx_theme_font.h"
 
 void SpxResMgr::on_awake() {
+	// 直接调用方：SpxEngine 生命周期；顶层由 Godot 引擎启动触发。
+	// 主题字体只在首次启动保存，后续游戏 reset 才能恢复真正的引擎初始值。
 	if (!initial_theme_fonts_saved) {
 		spx_get_theme_fonts(initial_theme_default_font, initial_theme_fallback_font);
 		initial_theme_fonts_saved = true;
@@ -62,6 +64,8 @@ void SpxResMgr::on_awake() {
 }
 
 void SpxResMgr::on_reset(int reset_code) {
+	// 直接调用方：SpxEngine reset/destroy；顶层来自 Go 游戏重启或热重载。
+	// 清除 Ref 容器只减少缓存引用，仍被节点使用的 Godot Resource 会继续存活。
 	svg_cache.clear();
 	animation_clips.clear();
 	display_fonts.clear();
@@ -116,6 +120,7 @@ static Ref<AudioStream> _load_mp3(const Ref<FileAccess> &p_file) {
 }
 
 Ref<AudioStream> SpxResMgr::_load_audio_direct(const String &p_path) {
+	// 直接调用方：AudioMgr/load_audio；顶层调用方：Go Sound 播放 API。
 	String path = _to_engine_path(p_path);
 	const Ref<AudioStream> *cached = cached_audio.getptr(path);
 	if (cached != nullptr) {
@@ -157,6 +162,8 @@ bool is_positive_animation_integer(const Variant &p_value) {
 
 bool SpxResMgr::_parse_anim_json(const String &src, bool p_is_atlas,
 		AnimPayload &out) {
+	// 直接调用方：create_animation；顶层调用方：Go sprite_animation 游戏构建流程。
+	// 先校验整份 JSON，再构造 SpriteFrames，避免缓存不完整动画。
 	JSON json;
 	ERR_FAIL_COND_V_MSG(json.parse(src) != OK, false,
 			"Invalid animation JSON: " + json.get_error_message());
@@ -292,6 +299,8 @@ Ref<Texture2D> SpxResMgr::load_texture_checked(const String &p_path,
 }
 
 Ref<Texture2D> SpxResMgr::_load_texture_direct(const String &p_path, bool p_allow_placeholder) {
+	// 直接调用方：Sprite/UI/TileMap 等 Manager；顶层来自 Go 服装和界面素材 API。
+	// SpxImageTexture 同时保留 CPU 像素，保证 Dummy 渲染器和像素碰撞也可读取。
 	const String path = _to_engine_path(p_path);
 	const Ref<Texture2D> *cached = cached_texture.getptr(path);
 	if (cached != nullptr) {
@@ -316,6 +325,7 @@ Ref<Texture2D> SpxResMgr::_load_texture_direct(const String &p_path, bool p_allo
 	return texture;
 }
 Ref<Texture2D> SpxResMgr::_reload_texture(String path) {
+	// 热重载尽量原位替换 ImageTexture 内容，使节点持有的既有 Ref 自动看到新像素。
 	if (SpxSvgCache::is_svg_path(path)) {
 		return svg_cache.reload_image(_to_engine_path(path));
 	}
@@ -412,6 +422,7 @@ void SpxResMgr::create_animation(
 		GdString p_json_ctx,
 		GdInt fps,
 		GdBool is_atlas) {
+	// 直接调用方：ABI/Web 桥；顶层调用方：Go loadSpriteAnimations。
 	const String key =
 			get_anim_key_name(SpxStr(p_sprite_type), SpxStr(p_anim_name));
 	if (animation_clips.has(key)) {
@@ -530,6 +541,8 @@ GdString SpxResMgr::list_directories(GdString p_path) {
 }
 
 GdString SpxResMgr::apply_project_fonts(GdString default_font_path, GdArray font_paths, GdArray font_families, GdArray preferences) {
+	// 直接调用方：ABI/Web 桥；顶层调用方：Go game_build -> applyRuntimeFontPlan。
+	// Godot ThemeDB 只能在主线程修改；prepare 阶段失败不会改变当前字体代。
 	if (!Thread::is_main_thread()) {
 		return SpxReturnStr("Project fonts must be applied on the engine main thread.");
 	}
@@ -549,8 +562,7 @@ GdString SpxResMgr::apply_project_fonts(GdString default_font_path, GdArray font
 }
 
 void SpxResMgr::_commit_project_fonts(ProjectFonts::Prepared &&p_prepared) {
-	// Preparation performs every fallible operation. Publish the complete
-	// generation to all consumers before invalidating previously rendered SVGs.
+	// prepare 已完成所有可能失败的操作；先向所有消费者发布完整字体代，再使旧 SVG 缓存失效。
 	SpxSvgUtils::apply_font_registry(p_prepared.default_data, p_prepared.faces, p_prepared.preferences);
 	display_fonts = std::move(p_prepared.display_fonts);
 	spx_set_project_theme_font(p_prepared.theme_font);
@@ -567,8 +579,7 @@ void SpxResMgr::set_default_font(GdString font_path) {
 		return;
 	}
 
-	// Each incremental call publishes immediately. Use apply_project_fonts to
-	// replace a complete configuration atomically.
+	// 单项兼容接口会立即发布；需要原子替换完整配置时应使用 apply_project_fonts。
 	SpxSvgUtils::reset_font_registry();
 	SpxSvgUtils::set_default_font(data.ptrw(), data.size());
 	display_fonts.clear();

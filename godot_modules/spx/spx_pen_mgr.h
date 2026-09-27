@@ -39,24 +39,31 @@ class SpxPenSurface;
 namespace SpxPixelQuery {
 struct Snapshot;
 }
+
+// 画笔子系统的 C++ 门面：管理所有 SpxPen，并将它们汇聚到一个持久化画布。
+// 直接调用方：生成的 spx_pen_* ABI 包装、SpxEngine Manager 生命周期和像素感知代码。
+// 顶层调用方：Go Pen API/每帧画笔批处理，以及 Sprite TouchingColor 等感知 API。
+// Godot 规则：Node 的增删和 SubViewport/RenderingServer 操作必须发生在引擎主线程。
 class SpxPenMgr : public SpxObjectMgr<SpxPen> {
 private:
-	SpxPenSurface *surface = nullptr;
+	SpxPenSurface *surface = nullptr; // 借用共享画布；创建后由 SceneTree 持有，销毁随 root queue_free。
 
 public:
+	// 生命周期直接由 SpxEngine::_notify_managers 调用；顶层来自 Godot 主循环阶段回调。
 	void on_awake() override;
 	void on_update(float delta) override;
 	void on_destroy() override;
 	void on_reset(int reset_code) override;
 
+	// SPX_BIND 接口直接由 Native/Web ABI 调用；顶层来自 Go engine.PenMgr。
 	SPX_BIND void destroy_all_pens();
 	SPX_BIND void set_canvas_size(GdInt width, GdInt height);
-	void flush_all();
-	bool capture(const Rect2 &p_query_bounds, SpxPixelQuery::Snapshot &r_snapshot);
+	void flush_all(); // 直接调用方：SpxEngine::on_update；将本帧命令提交给 RenderingServer。
+	bool capture(const Rect2 &p_query_bounds, SpxPixelQuery::Snapshot &r_snapshot); // 直接调用方：像素感知合成流程。
 	SPX_BIND GdObj create_pen();
 	SPX_BIND void destroy_pen(GdObj obj);
 	SPX_BIND void batch_update_commands(const float *buffer_data, int len);
-	// Pen operation methods
+	// 单笔操作由 ABI 或 batch_update_commands 转发，顶层均为 Go 侧画笔对象方法。
 	SPX_BIND void pen_stamp(GdObj obj);
 	SPX_BIND void pen_stamp_sprite(GdObj sprite_id);
 	SPX_BIND void move_pen_to(GdObj obj, GdVec2 position);
@@ -68,7 +75,7 @@ public:
 	SPX_BIND void change_pen_size_by(GdObj obj, GdFloat amount);
 	SPX_BIND void set_pen_size_to(GdObj obj, GdFloat size);
 	SPX_BIND void set_pen_stamp_texture(GdObj obj, GdString texture_path);
-	// rotation_radians is in radians.
+	// Godot Transform2D 使用弧度，因此跨语言参数在此明确保持 radians。
 	SPX_BIND void pen_stamp_with_transform(GdObj obj, GdString texture_path, GdVec2 position, GdFloat rotation_radians, GdVec2 scale);
 };
 

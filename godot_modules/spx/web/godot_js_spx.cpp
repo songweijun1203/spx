@@ -28,6 +28,9 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+// 本文件由 internal/cmd/codegen/generate/gdext/godot_js_spx.cpp.tmpl 自动生成。
+// 请勿只修改生成结果；Manager ABI 或公共注释应修改模板并重新运行代码生成。
+
 #include "../gdextension_spx_ext.h"
 #include "core/extension/gdextension.h"
 #include "core/extension/gdextension_special_compat_hashes.h"

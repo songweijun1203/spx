@@ -34,10 +34,11 @@
 #include "scene/gui/base_button.h"
 
 namespace {
+// 为把 SPX pressed 处理器插到最前而临时保存的一条 Godot 信号连接。
 struct PreservedConnection {
-	Callable callable;
-	uint32_t flags = 0;
-	int reference_count = 0;
+	Callable callable; // 原连接的目标与方法，Godot Callable 自身持有必要引用信息。
+	uint32_t flags = 0; // CONNECT_* 标志，重连时原样恢复。
+	int reference_count = 0; // 引用计数连接的重复次数。
 };
 } // namespace
 
@@ -46,6 +47,7 @@ Control *SpxUiBinding::get_control() const {
 }
 
 Error SpxUiBinding::_connect_pressed_first(Control *p_control) {
+	// Godot 默认按连接顺序同步发射信号；把 SPX 回调置前，可在用户脚本 queue_free 前记录点击。
 	BaseButton *button = Object::cast_to<BaseButton>(p_control);
 	if (button == nullptr) {
 		return OK;
@@ -56,9 +58,8 @@ Error SpxUiBinding::_connect_pressed_first(Control *p_control) {
 	List<Object::Connection> signal_connections;
 	button->get_signal_connection_list(pressed_signal, &signal_connections);
 
-	// BaseButton used to invoke the SPX callback immediately before emitting
-	// "pressed". Preserve that observable ordering when moving the callback to
-	// a standard signal, including for connections restored from PackedScene.
+	// BaseButton 原先在发射 "pressed" 前立即调用 SPX；改用标准信号后仍保持这一可观察顺序，
+	// 包括从 PackedScene 恢复的既有连接。
 	Vector<PreservedConnection> preserved;
 	for (const Object::Connection &connection : signal_connections) {
 		PreservedConnection item;
@@ -96,6 +97,7 @@ Error SpxUiBinding::_connect_pressed_first(Control *p_control) {
 }
 
 Error SpxUiBinding::attach(Control *p_control, GdObj p_gid, SpxUiBindingListener *p_listener) {
+	// 直接调用方：SpxUi::set_control_item；顶层来自 SpxUiMgr 的创建/绑定流程。
 	ERR_FAIL_NULL_V(p_control, ERR_INVALID_PARAMETER);
 	ERR_FAIL_COND_V(control_id.is_valid(), ERR_ALREADY_IN_USE);
 
@@ -137,6 +139,7 @@ void SpxUiBinding::_on_pressed() {
 }
 
 void SpxUiBinding::_notification(int p_what) {
+	// Godot 主动派发 PREDELETE；此时禁止 queue_free 自身，只通知 Manager 解除弱引用。
 	if (p_what != NOTIFICATION_PREDELETE || listener == nullptr) {
 		return;
 	}

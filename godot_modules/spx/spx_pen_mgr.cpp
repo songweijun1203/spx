@@ -94,6 +94,10 @@ bool is_valid_pen_batch_command(float p_value) {
 
 } // namespace
 
+// 创建共享画笔 Node/SubViewport 并挂入 SPX 根节点。
+// 直接调用方：SpxEngine::on_awake -> SpxManager::on_awake。
+// 顶层调用方：Godot SceneTree 主循环 start 阶段。
+// Godot 规则：add_child() 后节点由 SceneTree 管理，本 Manager 只保留借用指针。
 void SpxPenMgr::on_awake() {
 	surface = memnew(SpxPenSurface);
 	surface->set_name("pen_root");
@@ -111,11 +115,13 @@ void SpxPenMgr::on_update(float delta) {
 	_update_all(delta);
 }
 
+// 直接调用方：SpxEngine::on_destroy；顶层调用方：Godot 主循环退出或模块反初始化。
 void SpxPenMgr::on_destroy() {
 	surface = nullptr;
 	_destroy_objects_and_root();
 }
 
+// 直接调用方：SpxEngine::_do_reset；顶层调用方：Go RequestReset/Web 下一局重启流程。
 void SpxPenMgr::on_reset(int reset_code) {
 	_reset_objects(reset_code);
 	if (surface != nullptr) {
@@ -131,12 +137,16 @@ void SpxPenMgr::destroy_pen(GdObj obj) {
 	destroy_object(obj);
 }
 
+// 解码 Go PenSyncBuffer 的定长 float32 命令包，一次跨语言调用保持原始命令顺序。
+// 直接调用方：spx_pen_batch_update_commands/gdspx_pen_batch_update_commands ABI 包装。
+// 顶层调用方：Go 每帧画笔同步或立即操作前的 PenSyncBuffer.Barrier。
+// 所有记录先整体校验再执行，避免畸形 ABI 输入造成半批次状态更新。
 void SpxPenMgr::batch_update_commands(const float *buffer_data, int len) {
 	if (unlikely(!_require_main_thread(__func__))) {
 		return;
 	}
 
-	// Format: [count] + count x [op, idLowBits, idHighBits, a, b, c, d, reserved].
+	// 缓冲布局：[count] + count x [op, idLowBits, idHighBits, a, b, c, d, reserved]。
 	if (buffer_data == nullptr || len < 1) {
 		return;
 	}
@@ -220,6 +230,8 @@ void SpxPenMgr::set_canvas_size(GdInt width, GdInt height) {
 	}
 }
 
+// 将本帧累计命令提交给离屏画布。
+// 直接调用方：SpxEngine::on_update；顶层调用方：Godot 每个普通渲染/逻辑帧。
 void SpxPenMgr::flush_all() {
 	if (unlikely(!_require_main_thread(__func__))) {
 		return;
@@ -247,6 +259,8 @@ void SpxPenMgr::pen_stamp_sprite(GdObj sprite_id) {
 	surface->draw_stamp(sprite->get_anim2d());
 }
 
+// 为像素感知提供画笔层快照。
+// 直接调用方：SpxSpriteMgr 的颜色/透明度查询；顶层调用方：Go TouchingColor 等 API。
 bool SpxPenMgr::capture(const Rect2 &p_query_bounds, SpxPixelQuery::Snapshot &r_snapshot) {
 	return surface != nullptr && surface->capture(p_query_bounds, r_snapshot);
 }

@@ -35,19 +35,21 @@
 #include "scene/gui/scroll_bar.h"
 #include "scene/resources/style_box_flat.h"
 
-// Scratch's player list monitor. Drawing only the visible rows keeps the node
-// count and text shaping cost independent of the list length.
+// Scratch 风格列表监视器：只绘制可见行，使节点数与文本排版成本不随列表总长度增长。
+// 直接调用方是 SpxUiMgr::set_list_items；顶层调用方是 Go internal/ui 变量监视器。
+// Godot 规则：自定义 Control 在 NOTIFICATION_DRAW 中绘制，状态变化后调用 queue_redraw；
+// gui_input 接收滚轮事件，滚动条作为子节点由场景树拥有。
 class SpxListMonitor : public Control {
 	GDCLASS(SpxListMonitor, Control);
 
-	static constexpr int ROW_HEIGHT = 24;
-	static constexpr int BAR_HEIGHT = 22;
-	static constexpr int FONT_SIZE = 12;
-	String label;
-	PackedStringArray items;
-	VScrollBar *scroll = nullptr;
-	Ref<StyleBoxFlat> panel_style;
-	Ref<StyleBoxFlat> row_style;
+	static constexpr int ROW_HEIGHT = 24; // 每个列表数据行的逻辑像素高度。
+	static constexpr int BAR_HEIGHT = 22; // 标题栏高度。
+	static constexpr int FONT_SIZE = 12; // 标题及列表项的主题字体大小。
+	String label; // 由 Go 传入的列表变量显示名。
+	PackedStringArray items; // 当前值的本地副本，绘制帧只读取此快照。
+	VScrollBar *scroll = nullptr; // 场景树拥有的滚动条子节点，本类仅借用。
+	Ref<StyleBoxFlat> panel_style; // 面板背景样式的引用计数资源。
+	Ref<StyleBoxFlat> row_style; // 奇偶行共用的基础样式资源。
 
 	void update_scroll();
 	void scroll_changed(double p_value);
@@ -55,7 +57,7 @@ class SpxListMonitor : public Control {
 
 protected:
 	static void _bind_methods();
-	void _notification(int p_what);
+	void _notification(int p_what); // Godot 主动派发绘制/尺寸变化通知，不由业务代码直接调用。
 	void gui_input(const Ref<InputEvent> &p_event) override;
 
 public:

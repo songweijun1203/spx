@@ -21,8 +21,9 @@ import (
 	"github.com/goplus/spx/v3/internal/coroutine"
 )
 
-// OnCond handles rising edges without reentry, skipping polls while active.
-// Conditions must be fast and non-blocking.
+// OnCond 注册条件从 false 变为 true 时执行的处理器。
+// 同一个处理器仍在运行时跳过条件求值，避免重入；条件函数在帧更新前的采样阶段
+// 同步执行，因此必须快速完成且不能阻塞。
 func (p *scriptEventBindings) OnCond(__xgo_autoclosure_condition func() bool, onCondition func()) {
 	if __xgo_autoclosure_condition == nil || onCondition == nil {
 		return
@@ -36,13 +37,18 @@ func (p *scriptEventBindings) OnCond(__xgo_autoclosure_condition func() bool, on
 			defer func() { running = false }()
 			onCondition()
 		},
+		// running 使用短路求值：处理器尚未结束时连条件函数也不会调用。
 		func(data any) bool { return !running && edge(data) },
 	))
 }
 
-// sampleConditions reads a consistent snapshot before the frame clock advances.
+// sampleConditions 在逻辑时钟推进前评估全部 OnCond，并保存本帧命中的处理器快照。
+// 它只执行条件函数，不启动事件处理协程。RunBetweenScripts 取得调度器的 runMu，
+// 保证采样不会与某个用户脚本切片并发，从而让所有条件观察一致的游戏状态。
 func (p *scriptEventRegistry) sampleConditions() {
 	read := func() {
+		// matchingEventSinks 会调用每个 sink 的上升沿匹配函数；返回值按
+		// Scratch 目标顺序保存，供 OnEngineUpdate 原样派发。
 		p.pendingConditions = matchingEventSinks(p.globalSinks(coreevent.BucketCondition), nil)
 	}
 	if gco == nil {
@@ -52,7 +58,8 @@ func (p *scriptEventRegistry) sampleConditions() {
 	}
 }
 
-// dispatchConditions starts matched handlers without reevaluating conditions.
+// dispatchConditions 启动 sampleConditions 已经选出的条件处理器，不重新求值。
+// 先清空 pendingConditions，避免处理器执行或帧重入时重复派发同一批快照。
 func (p *scriptEventRegistry) dispatchConditions() {
 	sinks := p.pendingConditions
 	p.pendingConditions = nil
@@ -60,6 +67,7 @@ func (p *scriptEventRegistry) dispatchConditions() {
 		return
 	}
 	event := scriptEventDispatch{
+		// 条件事件之间不互相等待；每个命中的处理器由独立受管协程执行。
 		mode: coroutine.BatchAsync,
 		run: func(_ coroutine.Thread, sink *eventSink) {
 			sink.Handler.(func())()

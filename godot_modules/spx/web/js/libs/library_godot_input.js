@@ -31,6 +31,9 @@
 /*
  * Godot Web 的浏览器输入适配层。
  *
+ * 这是由 SCsub 的 WEB_JS_LIBRARY_OVERRIDES 安装的 SPX 覆盖版本；更新锁定的 Godot
+ * 版本时应与上游同名文件同步核对事件签名、代理规则和浏览器兼容处理。
+ *
  * 本文件由 Emscripten 合并进最终 engine.js。Godot C++ 初始化输入系统时调用下面的
  * godot_js_input_* 注册函数，这些函数再通过 GodotEventListeners.add() 把浏览器的
  * 鼠标、滚轮、触摸、键盘、手柄和输入法事件绑定到 Canvas/Window。

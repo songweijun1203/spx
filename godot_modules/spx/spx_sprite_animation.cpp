@@ -44,12 +44,14 @@ bool SpxSprite::_prepare_animation(const String &p_name,
 		PreparedVisual &r_visual,
 		int p_raster_scale) {
 	r_visual = PreparedVisual();
+	// 直接调用方：play_anim/set_anim；顶层调用方：Go Animation 组件和服装切换。
+	// 先完整准备 Ref 资源再提交，失败时保持 AnimatedSprite2D 当前外观不变。
 	r_visual.source.animation_name = p_name;
 	r_visual.source.key = p_name;
 	Ref<SpriteFrames> shared_frames = default_sprite_frames;
 	if (resMgr->is_dynamic_anim_mode()) {
 		String key = resMgr->get_anim_key_name(get_spx_type_name(), p_name);
-		// set_anim/get_anim also accept the complete engine animation key.
+		// set_anim/get_anim 也接受完整的引擎动画键。
 		if (!resMgr->has_animation(key) &&
 				resMgr->has_animation(p_name)) {
 			key = p_name;
@@ -73,28 +75,26 @@ bool SpxSprite::_prepare_animation(const String &p_name,
 							0,
 			false, "SpxSprite: animation frames are missing.");
 	r_visual.shared_frames = shared_frames;
-	// Replaying the same clip must retain frame/progress, just as Godot play()
-	// does. A new source gets private metadata, while textures stay shared.
+	// 与 Godot play() 一致，重复播放同一片段保留帧/进度；新来源复制私有元数据，但纹理仍共享。
 	if (source_sprite_frames == shared_frames && anim2d->get_sprite_frames().is_valid() && anim2d->get_sprite_frames()->has_animation(r_visual.animation)) {
 		r_visual.frames = anim2d->get_sprite_frames();
 	} else if (resMgr->is_dynamic_anim_mode()) {
 		r_visual.frames = spx_copy_animation_frames(shared_frames, r_visual.animation);
 	} else {
-		// Scene-authored sprites may contain several clips. Retain that complete
-		// library when Node::duplicate() copies the current visual into a clone.
+		// 场景制作的精灵可能含多个片段；Node::duplicate 克隆当前外观时保留完整动画库。
 		r_visual.frames = shared_frames->duplicate(false);
 	}
 	return r_visual.frames.is_valid();
 }
 
 void SpxSprite::_play_prepared_animation(const PreparedVisual &p_visual, GdFloat p_speed, GdBool p_from_end) {
+	// 直接调用方：play_anim/play_backwards_anim；最终调用 Godot AnimatedSprite2D::play。
 	const bool changed_animation = anim2d->get_animation() != p_visual.animation;
 	_commit_visual(p_visual);
 	playback_speed = p_speed;
 	anim2d->play(p_visual.animation, p_speed, p_from_end);
 	if (changed_animation && p_from_end) {
-		// commit selected the new name already; preserve Godot play() semantics
-		// for a new clip even when its effective playback speed is positive.
+		// commit 已选中新动画；即使有效速度为正，也保持 Godot 从末帧播放新片段的语义。
 		anim2d->set_frame_and_progress(p_visual.frames->get_frame_count(p_visual.animation) - 1, 1.0);
 	}
 	_on_frame_changed();
@@ -102,6 +102,8 @@ void SpxSprite::_play_prepared_animation(const PreparedVisual &p_visual, GdFloat
 }
 
 void SpxSprite::play_anim(GdString p_name, GdFloat p_speed, GdBool p_is_loop, GdBool p_from_end) {
+	// 直接调用方：SpxSpriteMgr::play_anim；顶层调用方：Go component_animation 的 Play/Loop。
+	// SpriteFrames 的 loop 是资源属性，因此使用当前精灵的私有帧元数据，避免串改其他精灵。
 	ERR_FAIL_NULL_MSG(anim2d, "SpxSprite: AnimatedSprite2D component is missing.");
 	PreparedVisual visual;
 	if (!_prepare_animation(SpxStr(p_name), visual)) {

@@ -26,6 +26,9 @@ func (p *Game) addShape(child Shape) {
 	p.shapeMgr.addShape(child)
 }
 
+// addClonedShape 是 Game 到 shapeManager 的克隆插入入口。
+//
+// 直接调用方：createRuntimeClone；总体流程调用方：精灵脚本的 Clone API。
 func (p *Game) addClonedShape(src, clone Shape) {
 	p.shapeMgr.addClonedShape(src, clone)
 }

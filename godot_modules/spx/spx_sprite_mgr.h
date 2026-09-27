@@ -44,10 +44,13 @@ typedef std::function<bool(GdColor, GdColor)> ColorCheckFunc;
 class SpxSprite;
 class ISortableSprite;
 
+// 无向碰撞对：构造时按 ID 排序，使 A-B 与 B-A 在集合中只保留一份。
+// 直接使用方是 SpxSpriteMgr 的触发器/像素碰撞状态机；顶层事件来自 Godot Area2D，
+// 最终通过 SPX_CALLBACK 回到 Go 的 runtime 触碰事件队列。
 class TriggerPair {
 public:
-	GdObj id1;
-	GdObj id2;
+	GdObj id1; // 规范化后较小的 Go 精灵对象 ID，不拥有精灵。
+	GdObj id2; // 规范化后较大的 Go 精灵对象 ID，不拥有精灵。
 
 public:
 	TriggerPair() :
@@ -79,6 +82,7 @@ public:
 };
 
 namespace std {
+// 供 unordered_set<TriggerPair> 使用的标准哈希适配，不保存额外状态。
 template <>
 struct hash<TriggerPair> {
 	size_t operator()(const TriggerPair &pair) const {
@@ -87,22 +91,22 @@ struct hash<TriggerPair> {
 };
 } //namespace std
 
+// 精灵系统的 Godot 侧门面：维护 Go 对象 ID 到 SpxSprite 节点的映射，并统一提供
+// 创建、视觉、动画、物理、碰撞和批量同步接口。SPX_BIND 接口的直接调用方是生成的
+// C/JS-WASM 桥，顶层调用方是 Go runtime_sync、Sprite/Physics/Animation 组件和输入事件。
+// 所有 Node 裸指针均由场景树拥有；除纯资源读取外，本类接口应在 Godot 主线程执行。
 class SpxSpriteMgr : public SpxManager {
 private:
-	RBMap<GdObj, SpxSprite *> id_objects;
+	RBMap<GdObj, SpxSprite *> id_objects; // 活跃 ID 到借用节点指针的索引，不负责 delete。
 
-	std::unordered_set<TriggerPair> bounding_collision_pairs;
-	std::unordered_set<TriggerPair> pixel_collision_pairs;
+	std::unordered_set<TriggerPair> bounding_collision_pairs; // Area2D 已重叠、待像素复核的候选对。
+	std::unordered_set<TriggerPair> pixel_collision_pairs; // 上一帧确认像素相交的对，用于生成 enter/exit 边沿。
 
-	Node *dont_destroy_root = nullptr;
-	Node *sprite_root = nullptr;
+	Node *dont_destroy_root = nullptr; // 引擎场景树中的持久节点根，借用指针。
+	Node *sprite_root = nullptr; // 当前场景的精灵挂载根，借用指针。
 
-	// Pixel-perfect collision sampling step: check every N pixels instead of every pixel
-	// Higher values = better performance but lower accuracy
-	// 1 = check every pixel (most accurate, slowest)
-	// 2 = check every 2 pixels (good balance)
-	// 3+ = faster but may miss small collisions
-	int pixel_collision_sampling_step;
+	// 像素碰撞每隔 N 个世界像素采样一次：1 最精确但最慢，2 通常较均衡，3 以上可能漏掉细小交叠。
+	int pixel_collision_sampling_step; // 由 Go 项目物理设置初始化，最小值为 1。
 
 	Ref<Image> _get_current_frame_image(AnimatedSprite2D *sprite);
 	Rect2 _get_sprite_aabb(AnimatedSprite2D *anim2d);
@@ -119,7 +123,8 @@ protected:
 	void _register_sprite(SpxSprite *p_sprite);
 
 public:
-	static StringName default_texture_anim;
+	static StringName default_texture_anim; // 单张纹理包装成 SpriteFrames 时使用的固定动画名。
+	// 生命周期直接由 SpxEngine 调用；顶层来自 Godot 主循环与 Go 游戏重置/销毁流程。
 	void on_awake() override;
 	void on_start() override;
 	void on_destroy() override;
@@ -135,8 +140,10 @@ public:
 	void collect_sortable_sprites(Vector<ISortableSprite *> &out);
 
 public:
+	// 下列 SPX_BIND 方法由接口生成器导出。直接调用方：原生 C ABI 或 Web 桥；
+	// 顶层调用方：Go 的 enginewrap.Manager 以及更上层的 Sprite/Game API。
 	SPX_BIND void set_dont_destroy_on_load(GdObj obj);
-	// process
+	// Godot 规则：process 与 physics_process 分别在空闲帧和固定物理帧调度。
 	SPX_BIND void set_process(GdObj obj, GdBool is_on);
 	SPX_BIND void set_physic_process(GdObj obj, GdBool is_on);
 
@@ -145,7 +152,7 @@ public:
 	SPX_BIND void set_pivot(GdObj obj, GdVec2 pivot);
 	SPX_BIND GdVec2 get_pivot(GdObj obj);
 
-	// children
+	// 子节点变换接口；NodePath 相对 SpxSprite，返回的节点仍归场景树所有。
 	SPX_BIND void set_child_position(GdObj obj, GdString path, GdVec2 pos);
 	SPX_BIND GdVec2 get_child_position(GdObj obj, GdString path);
 	SPX_BIND void set_child_rotation(GdObj obj, GdString path, GdFloat rot);
@@ -199,7 +206,7 @@ public:
 	SPX_BIND GdInt get_z_index(GdObj obj);
 	SPX_BIND void set_z_index(GdObj obj, GdInt z);
 
-	// animation
+	// 动画接口：Manager 只按 ID 路由，具体 Godot AnimatedSprite2D 语义由 SpxSprite 实现。
 	SPX_BIND void play_anim(GdObj obj, GdString p_name, GdFloat p_speed, GdBool isLoop, GdBool p_revert);
 	SPX_BIND void play_backwards_anim(GdObj obj, GdString p_name);
 	SPX_BIND void pause_anim(GdObj obj);
@@ -222,7 +229,7 @@ public:
 	SPX_BIND GdBool is_anim_flipped_v(GdObj obj);
 	SPX_BIND GdString get_current_anim_name(GdObj obj);
 
-	// physics
+	// 物理接口：CharacterBody2D 的接触结果仅在固定物理帧 move_and_slide 后有效。
 	SPX_BIND void set_velocity(GdObj obj, GdVec2 velocity);
 	SPX_BIND GdVec2 get_velocity(GdObj obj);
 	SPX_BIND GdBool is_on_floor(GdObj obj);
@@ -243,7 +250,7 @@ public:
 	SPX_BIND void set_mass(GdObj obj, GdFloat mass);
 	SPX_BIND GdFloat get_mass(GdObj obj);
 	SPX_BIND void add_force(GdObj obj, GdVec2 force);
-	// One-shot momentum change: next dynamic tick adds impulse / mass, with no delta factor.
+	// 一次性动量变化：下一动态物理帧增加 impulse / mass，不乘 delta。
 	SPX_BIND void add_impulse(GdObj obj, GdVec2 impulse);
 
 	SPX_BIND void set_physics_mode(GdObj obj, GdInt mode);
@@ -281,19 +288,20 @@ public:
 	SPX_BIND void set_trigger_enabled(GdObj obj, GdBool trigger);
 	SPX_BIND GdBool is_trigger_enabled(GdObj obj);
 
-	// misc
-	// Matches any opaque source pixel against the target pixel color; the source pixel color itself is not filtered.
+	// 像素感知：任意不透明源像素与目标场景颜色比较，源像素颜色本身不筛选。
 	SPX_BIND GdBool check_collision_by_color(GdObj obj, GdColor color, GdFloat color_threshold, GdFloat alpha_threshold);
-	// Matches both source and target pixel colors using the same RGBA distance threshold on each side.
+	// 双颜色感知：源和目标两侧都使用同一 RGBA 距离阈值。
 	SPX_BIND GdBool check_collision_by_colors(GdObj obj, GdColor sprite_color, GdColor target_color, GdFloat color_threshold, GdFloat alpha_threshold);
 	SPX_BIND GdBool check_collision_by_alpha(GdObj obj, GdFloat alpha_threshold);
 	SPX_BIND GdBool check_collision_with_sprite(GdObj obj, GdObj obj_b, GdFloat alpha_threshold, GdBool use_pixel_perfect);
 
-	// pixel collision sampling configuration
+	// 像素碰撞采样精度配置，由 Go Game 物理设置直接调用。
 	SPX_BIND void set_pixel_collision_sampling_step(GdInt step);
 	SPX_BIND GdInt get_pixel_collision_sampling_step();
 
-	// batch sync
+	// 批量同步入口用于减少跨 ABI 次数：transform/retrieve 已由 Go runtime_sync 的帧末
+	// flush/pull 使用；visual/physics 对应 Go internal/engine 的序列化缓冲，目前保留为桥接接口。
+	// Godot 规则：节点变换和物理状态只能在引擎主线程批量应用。
 	SPX_BIND void batch_update_transforms(const float *buffer_data, int len);
 	SPX_BIND void batch_update_visuals(const float *buffer_data, int len);
 	SPX_BIND GdBool batch_retrieve_positions(const GdObj *objs, int count, SPX_OUT float *out, int out_len);

@@ -58,6 +58,7 @@ SpxListMonitor::SpxListMonitor() {
 }
 
 void SpxListMonitor::set_items(const String &p_label, const PackedStringArray &p_items, const Color &p_color) {
+	// 直接调用方：SpxUiMgr::set_list_items；顶层调用方：Go 变量监视器的 render。
 	label = p_label;
 	items = p_items;
 	row_style->set_bg_color(p_color);
@@ -90,6 +91,7 @@ void SpxListMonitor::draw_text(const String &p_text, const Rect2 &p_rect, const 
 }
 
 void SpxListMonitor::_notification(int p_what) {
+	// Godot 规则：NOTIFICATION_DRAW 中只提交 CanvasItem 绘制命令，不创建逐行子节点。
 	switch (p_what) {
 		case NOTIFICATION_RESIZED:
 		case NOTIFICATION_THEME_CHANGED:
@@ -116,7 +118,7 @@ void SpxListMonitor::_notification(int p_what) {
 			if (items.is_empty()) {
 				draw_text(atr("(empty)"), Rect2(2, BAR_HEIGHT + 3, right - 4, ROW_HEIGHT), text_color, HORIZONTAL_ALIGNMENT_CENTER);
 			}
-			// Opaque bars also clip partially visible rows at the viewport edges.
+			// 不透明标题栏/底栏同时遮住视口边缘只显示一部分的行。
 			draw_rect(Rect2(1, 1, size.x - 2, BAR_HEIGHT - 1), Color(1, 1, 1));
 			draw_rect(Rect2(1, size.y - BAR_HEIGHT, size.x - 2, BAR_HEIGHT - 1), Color(1, 1, 1));
 			draw_line(Vector2(1, BAR_HEIGHT), Vector2(size.x - 1, BAR_HEIGHT), Color(0, 0, 0, 0.15));
@@ -128,6 +130,7 @@ void SpxListMonitor::_notification(int p_what) {
 }
 
 void SpxListMonitor::gui_input(const Ref<InputEvent> &p_event) {
+	// Godot Control 输入回调；仅消费落在本控件上的滚轮并更新子滚动条值。
 	Ref<InputEventMouseButton> mouse = p_event;
 	if (mouse.is_valid() && mouse->is_pressed()) {
 		if (mouse->get_button_index() == MouseButton::WHEEL_UP || mouse->get_button_index() == MouseButton::WHEEL_DOWN) {

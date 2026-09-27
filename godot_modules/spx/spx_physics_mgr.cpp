@@ -48,12 +48,14 @@
 #include "spx_sprite.h"
 #include "spx_sprite_mgr.h"
 
-// Ray-query arrays encode coordinates and normals as fixed-point integers.
+// 射线详情通过 int64 ABI 数组返回；坐标和法线乘 1e4 编成定点数，避免跨语言
+// Variant/浮点数组布局差异。Go PhysicsMgr 在顶层负责还原。
 static GdInt pack_query_float(GdFloat value) {
 	return (GdInt)(value * 10000);
 }
 
 GdArray SpxPhysicsMgr::RayHit::to_array() const {
+	// 字段顺序是 Go/C++ 契约：[命中, sprite_id, px, py, nx, ny]，不可随意调整。
 	GdArray result_array = SpxAbi::create_array(GD_ARRAY_TYPE_INT64, 6);
 	SpxAbi::set_array(result_array, 0, (GdInt)collide);
 	SpxAbi::set_array(result_array, 1, (GdInt)sprite_id);
@@ -89,10 +91,12 @@ GdFloat SpxPhysicsDefine::get_global_air_drag() {
 }
 
 void SpxPhysicsMgr::on_awake() {
+	// 直接调用方：SpxEngine::_notify_managers(on_awake)；顶层为 Godot/SPX 启动。
 	is_collision_by_pixel = true;
 }
 
 SpxPhysicsMgr::RayHit SpxPhysicsMgr::_query_ray(GdVec2 from, GdVec2 to, GdArray ignore_sprites, GdInt collision_mask, GdBool collide_with_areas, GdBool collide_with_bodies) {
+	// 直接调用方：raycast/check_collision/raycast_with_details；顶层为 Go 物理查询 API。
 	RayHit info;
 
 	GdVec2 current_from = spx_to_godot_vec2(from);
@@ -130,6 +134,7 @@ SpxPhysicsMgr::RayHit SpxPhysicsMgr::_query_ray(GdVec2 from, GdVec2 to, GdArray 
 		return info;
 	}
 
+	// Godot 规则：DirectSpaceState 属于当前 World2D，只在本次主线程查询期间有效。
 	bool hit = space_state->intersect_ray(params, result);
 	if (!hit) {
 		return info;
@@ -160,7 +165,7 @@ GdBool SpxPhysicsMgr::check_collision(GdVec2 from, GdVec2 to, GdInt collision_ma
 	return _query_ray(from, to, nullptr, collision_mask, collide_with_areas, collide_with_bodies).collide;
 }
 
-// Internal helper function for boundary checking
+// 边缘检测共用实现。直接调用方为 camera/stage 三组公开接口，顶层是 Go 精灵感知 API。
 GdInt SpxPhysicsMgr::_check_touched_boundaries(GdObj obj, GdBool use_stage_limits) {
 	auto sprite = spriteMgr->get_sprite(obj);
 	if (sprite == nullptr) {
@@ -178,7 +183,7 @@ GdInt SpxPhysicsMgr::_check_touched_boundaries(GdObj obj, GdBool use_stage_limit
 	}
 	Transform2D shape_transform = collision_shape->get_global_transform();
 
-	// Get boundary rect from camera manager
+	// 相机边界取当前可见世界矩形；舞台边界取 Camera2D limits。
 	Rect2 boundary_rect = use_stage_limits ? cameraMgr->get_stage_limits_rect() : cameraMgr->get_global_camera_rect();
 
 	real_t bound_left = boundary_rect.position.x;
@@ -191,7 +196,7 @@ GdInt SpxPhysicsMgr::_check_touched_boundaries(GdObj obj, GdBool use_stage_limit
 
 	Ref<RectangleShape2D> vertical_edge_shape;
 	vertical_edge_shape.instantiate();
-	// Use full boundary size * 2 to handle rotation and scaling
+	// 边缘形状延伸到边界尺寸两倍，覆盖旋转、缩放精灵越过角点的情况。
 	vertical_edge_shape->set_size(Vector2(2, height * 2));
 
 	Ref<RectangleShape2D> horizontal_edge_shape;
@@ -236,7 +241,7 @@ GdInt SpxPhysicsMgr::_check_nearest_touched_boundary(GdObj obj, GdBool use_stage
 		return 0;
 	}
 
-	// Get sprite's bounding box
+	// 使用触发碰撞形状的世界包围盒估算最近越界边。
 	CollisionShape2D *collision_shape = sprite->get_trigger();
 	if (!collision_shape) {
 		return 0;
@@ -254,15 +259,14 @@ GdInt SpxPhysicsMgr::_check_nearest_touched_boundary(GdObj obj, GdBool use_stage
 	real_t top = world_rect.position.y;
 	real_t bottom = world_rect.position.y + world_rect.size.y;
 
-	// Get boundary rect from camera manager
+	// 与完整接触检测保持相同的相机/舞台矩形来源。
 	Rect2 boundary_rect = use_stage_limits ? cameraMgr->get_stage_limits_rect() : cameraMgr->get_global_camera_rect();
 	real_t bound_left = boundary_rect.position.x;
 	real_t bound_top = boundary_rect.position.y;
 	real_t bound_right = boundary_rect.position.x + boundary_rect.size.x;
 	real_t bound_bottom = boundary_rect.position.y + boundary_rect.size.y;
 
-	// Positive distances never count as a touch. The first touched edge wins,
-	// preserving the left/top/right/bottom tie order at corners.
+	// 正距离不算接触；角点同时越界时固定按左、上、右、下顺序返回。
 	if (left - bound_left <= 0) {
 		return BOUND_LEFT;
 	}
@@ -294,7 +298,6 @@ GdInt SpxPhysicsMgr::check_nearest_touched_stage_boundary(GdObj obj) {
 	return _check_nearest_touched_boundary(obj, true);
 }
 
-//
 void SpxPhysicsMgr::set_collision_system_type(GdBool is_collision_by_alpha) {
 	this->is_collision_by_pixel = is_collision_by_alpha;
 }
@@ -324,6 +327,7 @@ GdFloat SpxPhysicsMgr::get_global_air_drag() {
 }
 
 GdArray SpxPhysicsMgr::_query_shape(RID shape, GdVec2 pos, GdInt collision_mask) {
+	// 直接调用方：矩形/圆形范围查询；顶层为 Go PhysicsMgr。
 	PhysicsDirectSpaceState2D *space_state = _get_space_state();
 	if (!space_state) {
 		return SpxAbi::create_array(GD_ARRAY_TYPE_GDOBJ, 0);
@@ -341,6 +345,7 @@ GdArray SpxPhysicsMgr::_query_shape(RID shape, GdVec2 pos, GdInt collision_mask)
 	params.margin = 0.0;
 
 	constexpr int MAX_QUERY_HITS = 32;
+	// Godot intersect_shape 由调用方提供定长结果缓冲；SPX 单次查询最多返回 32 个精灵。
 	PhysicsDirectSpaceState2D::ShapeResult results[MAX_QUERY_HITS];
 	const int result_count = space_state->intersect_shape(params, results, MAX_QUERY_HITS);
 	GdObj ids[MAX_QUERY_HITS];

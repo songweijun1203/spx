@@ -3,4 +3,6 @@
 Import("env")
 Import("env_spx")
 
+# Godot 模块子目录规则：复用根目录克隆出的 SPX 环境，并将全部录制实现加入最终模块。
+# 直接调用方：spx/SCsub 的 SConscript；顶层调用方：Godot SCons 引擎构建。
 env_spx.add_source_files(env.modules_sources, "*.cpp")

@@ -36,6 +36,7 @@
 #include "spx_coordinate.h"
 
 void SpxCameraMgr::on_awake() {
+	// 直接调用方：SpxEngine::_notify_managers(on_awake)；顶层为 Godot/SPX 启动。
 	camera = nullptr;
 	owns_camera = false;
 	auto nodes = get_root()->find_children("*", "Camera2D", true, false);
@@ -47,15 +48,18 @@ void SpxCameraMgr::on_awake() {
 	}
 
 	if (camera == nullptr) {
+		// 优先复用场景作者提供的 Camera2D；仅在缺失时创建内部相机。
 		camera = memnew(Camera2D);
 		owns_camera = true;
 		camera->set_name("SpxCamera2D");
 		get_spx_root()->add_child(camera);
+		// add_child 后场景树取得 Node 生命周期所有权，本类只记录销毁责任。
 	}
 }
 
 void SpxCameraMgr::on_destroy() {
 	if (owns_camera && camera != nullptr) {
+		// queue_free 延迟到 Godot 安全阶段；复用的用户相机不由本类删除。
 		camera->queue_free();
 	}
 	camera = nullptr;
@@ -69,10 +73,12 @@ void SpxCameraMgr::on_reset(int reset_code) {
 }
 
 Vector2 SpxCameraMgr::get_global_mouse_position() {
+	// Camera2D/Canvas 变换由 Godot 维护，返回的是 Godot 世界坐标；InputMgr 再转为 SPX。
 	return camera->get_global_mouse_position();
 }
 
 void SpxCameraMgr::set_stretch_clear_color() {
+	// 透明背景和 SDR 2D 是拉伸合成约定，避免窗口外留边被不透明清屏色覆盖。
 	Viewport *vp = camera->get_viewport();
 	vp->set_transparent_background(true);
 	vp->set_use_hdr_2d(false);
@@ -100,6 +106,8 @@ GdRect2 SpxCameraMgr::get_viewport_rect() {
 }
 
 GdRect2 SpxCameraMgr::get_global_camera_rect() {
+	// 使用 Viewport canvas_transform 的逆矩阵把屏幕角点投到世界坐标；
+	// 这比只用相机 position/zoom 更能覆盖 Godot 实际 Canvas 变换。
 	Viewport *vp = camera->get_viewport();
 	Transform2D screen_to_world = vp->get_canvas_transform().affine_inverse();
 

@@ -24,6 +24,10 @@ import (
 	gdx "github.com/goplus/spx/v3/pkg/spx/pkg/engine"
 )
 
+// CreateBareSpriteForType 通过具体代理类型创建一个无预制场景的 Godot 精灵代理。
+//
+// 直接调用方：BridgeNewBareSprite；总体流程调用方：SpriteImpl 代理初始化及运行时
+// Clone。createBareSprite 先取得 Godot Object ID，再构造 T 并登记到 state.sprites。
 func CreateBareSpriteForType[T any](pos mathf.Vec2) *T {
 	value := createBareSprite(reflect.TypeFor[T](), pos)
 	return value.Addr().Interface().(*T)
@@ -60,6 +64,10 @@ func createPrefabSprite(t reflect.Type, pos mathf.Vec2) reflect.Value {
 	return createSpriteValue(t, id)
 }
 
+// createBareSprite 调用 SpriteMgr.CreateBareSprite 创建 Godot SpxSprite，再绑定 Go 代理。
+//
+// 直接调用方：CreateBareSpriteForType、runtimeBridge.CreateEmptySprite；总体流程调用方：
+// 根包精灵代理初始化和公开的 CreateEmptySprite API。
 func createBareSprite(t reflect.Type, pos mathf.Vec2) reflect.Value {
 	id := Managers().SpriteMgr.CreateBareSprite(pos)
 	return createSpriteValue(t, id)
@@ -98,6 +106,10 @@ func initUIValue(value reflect.Value, id Object) reflect.Value {
 	return value
 }
 
+// createSpriteValue 用 Godot Object ID 初始化 ISpriter，并登记到全局反向查找表。
+//
+// 直接调用方：精灵场景绑定、预制精灵/裸精灵创建和背景创建；总体流程调用方：所有
+// Godot 精灵代理创建。state.sprites 使后续 Godot 回调能够按 ID 找回同一个 Go 代理。
 func createSpriteValue(t reflect.Type, id Object) reflect.Value {
 	spriteValue := reflect.New(t).Elem()
 	sprite := spriteValue.Addr().Interface().(gdx.ISpriter)

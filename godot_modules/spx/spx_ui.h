@@ -41,6 +41,7 @@
 #include "scene/gui/slider.h"
 #include "scene/gui/texture_rect.h"
 
+// SPX 支持的 Godot Control 类型标签，用于在 ABI 整数与具体节点子类间安全转换。
 enum class ESpxUiType {
 	None = 0,
 	Control = 1,
@@ -63,11 +64,14 @@ typedef Control SpxControl;
 typedef LineEdit SpxInput;
 typedef HSlider SpxSlider;
 
+// Godot Control 的非 Object 包装器：以稳定 ObjectID 保存弱引用，并把通用 UI 属性统一成
+// Go 可调用接口。直接调用方是 SpxUiMgr；顶层调用方是 Go internal/ui 和 UINode API。
+// 本类不拥有 Control；节点由场景树管理，销毁须 queue_free，访问前通过 ObjectDB 重新解析。
 class SpxUi {
-	ObjectID control_id;
-	ObjectID binding_id;
-	GdObj gid = 0;
-	GdInt type = 0;
+	ObjectID control_id; // 被包装 Control 的 Godot 实例 ID；对象释放后解析为 nullptr。
+	ObjectID binding_id; // 挂在 Control 下的 SpxUiBinding 实例 ID，用于校验异步信号来源。
+	GdObj gid = 0; // 对应 Go UI 对象 ID，由 SpxUiMgr 分配并作为回调身份。
+	GdInt type = 0; // ESpxUiType 数值，决定允许向哪种 Control 子类转换。
 
 public:
 	~SpxUi();
@@ -86,6 +90,7 @@ public:
 
 	Control *get_control_item() const;
 	Error set_control_item(Control *p_control, SpxUiBindingListener *p_listener);
+	// p_destroying_binding 用于 Godot PREDELETE 回调，避免再次访问正在析构的绑定节点。
 	void detach_control_binding(ObjectID p_destroying_binding = ObjectID());
 	bool owns_binding(ObjectID p_binding_id) const;
 
@@ -95,6 +100,7 @@ public:
 
 	GdInt get_type();
 	void queue_free();
+	// Godot 规则：queue_free 延迟到当前帧末删除节点，不能在发射信号时直接 delete。
 	void set_interactable(GdBool interactable);
 	GdBool is_interactable();
 	void set_text(GdString text);

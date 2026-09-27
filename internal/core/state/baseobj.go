@@ -23,6 +23,8 @@ import (
 )
 
 type BaseObjRuntimeState struct {
+	// SyncSprite 是 SpriteImpl 对应的低层 Godot 同步代理，不是根包的 spx.Sprite。
+	// 普通精灵路径下其动态对象为 *internal/engine.Sprite；代理通过 gid 与 Godot 节点关联。
 	SyncSprite     *engine.Sprite
 	Scale          float64
 	IsCostumeSet   bool
