@@ -33,7 +33,7 @@ type SpriteImpl struct {
 	scriptEventBindings //脚本事件绑定
 
 	sprite      Sprite
-	original    *SpriteImpl
+	original    *SpriteImpl //cloneFamilyRoot
 	spriteState corestate.SpriteRuntimeState
 	// proxyPublication points to fresh clone-local state. The pointer itself
 	// remains stable after clone construction so reflective cloning never copies
@@ -134,6 +134,7 @@ func (p *SpriteImpl) markVisualDirty() {
 // -----------------------------------------------------------------------------
 // Initialization
 // -----------------------------------------------------------------------------
+// sprite Sprite 是最外层业务层精灵对象，gamer 是最外层业务层 Gamer 对象，spriteCfg 是精灵配置
 func (p *SpriteImpl) init(
 	g *Game, name string, spriteCfg *coreproject.SpriteConfig, gamer reflect.Value, sprite Sprite) {
 	// 1. 将服装/图集配置转换为 Go costume，并把该精灵绑定到 Game 的事件注册表。
