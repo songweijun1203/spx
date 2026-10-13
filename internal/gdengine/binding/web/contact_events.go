@@ -36,6 +36,8 @@ const (
 var contactEventsHandle js.Func
 var contactEventGeneration uint64
 
+// registerContactEventQueue 注册 Web 专用的批量碰撞/触发事件入口。
+// 直接上级：registerWebGlobals()；JavaScript 通过 globalThis.gdspx_on_contact_events 调用。
 func registerContactEventQueue() {
 	if contactEventsHandle.Type() != js.TypeUndefined {
 		return
@@ -44,6 +46,8 @@ func registerContactEventQueue() {
 	js.Global().Set("gdspx_on_contact_events", contactEventsHandle)
 }
 
+// gdspxContactEvents 把 JavaScript Uint8Array 中的批量事件复制到 Go 并逐条分发。
+// 直接上级：library_godot_gdspx.js 刷新接触事件队列时调用已注册的全局函数。
 func gdspxContactEvents(this js.Value, args []js.Value) any {
 	generation := contactEventGeneration
 	if len(args) == 0 || !isByteArray(args[0]) {
@@ -56,12 +60,13 @@ func gdspxContactEvents(this js.Value, args []js.Value) any {
 		return nil
 	}
 
-	// A callback can submit another batch before this one finishes dispatching.
+	// 回调可能在当前批次尚未派发完时同步提交下一批，因此这里为每次调用保留独立副本，
+	// 不能像非重入路径那样复用包级 scratch buffer。
 	buf := make([]byte, length)
 	js.CopyBytesToGo(buf, events)
 
-	// A callback may synchronously reset/destroy the engine or rebind callbacks.
-	// Stop before delivering the rest of that batch to a different session.
+	// 某个回调也可能同步重置/销毁引擎或重新绑定回调表。generation 变化后立即停止，
+	// 避免把同一批剩余事件错误地交给新会话。
 	for i := 0; generation == contactEventGeneration && i+contactEventBytes <= len(buf); i += contactEventBytes {
 		kind := int(binary.LittleEndian.Uint32(buf[i : i+4]))
 		self := int64(binary.LittleEndian.Uint64(buf[i+4 : i+12]))
@@ -71,6 +76,8 @@ func gdspxContactEvents(this js.Value, args []js.Value) any {
 	return nil
 }
 
+// dispatchContactEvent 根据事件类型调用当前 Web 回调表中的碰撞或触发函数。
+// 直接上级：gdspxContactEvents()。
 func dispatchContactEvent(kind int, self, other int64) {
 	var cb func(int64, int64)
 	switch kind {

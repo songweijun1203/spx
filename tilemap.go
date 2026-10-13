@@ -108,12 +108,14 @@ func (p *Game) TilemapName() string {
 }
 
 func (p *gameTilemapMgr) init(g *Game, fs spxfs.Dir, tilemapPath string) {
+	// 保存 Game/FS，使动态切换地图仍能沿用同一资源视图。
 	p.g = g
 	p.fs = fs
 	if tilemapPath == "" {
 		return
 	}
-	// Load the default tilemap specified in config
+	// 这里只加载/解析默认地图描述。旧格式先保存在 Go datas；新格式把 tilemap.json
+	// 交给 Godot TilemapparserMgr 建立解析结果。真正铺瓦片在 parseTilemap。
 	p.loadMap(tilemapPath)
 }
 
@@ -145,6 +147,7 @@ func (p *gameTilemapMgr) replaceMap(loaded tm.LoadResult) {
 }
 
 func (p *gameTilemapMgr) setMap(loaded tm.LoadResult) {
+	// LoadResult 把新旧格式归一到一组状态，后续只通过 useNewLoader 分流创建方式。
 	p.datas = loaded.Data
 	p.decoratorDatas = loaded.DecoratorData
 	p.useNewLoader = loaded.UseNewLoader
@@ -152,6 +155,8 @@ func (p *gameTilemapMgr) setMap(loaded tm.LoadResult) {
 	p.currentMap = loaded.CurrentMap
 
 	if p.useNewLoader {
+		// 新格式的瓦片主体由 Godot 解析器直接加载；Go 仍保留 decorator.json，
+		// 以便按统一路径创建带纹理/碰撞的静态装饰精灵。
 		engine.Managers().TilemapparserMgr.LoadTilemap(engine.ToAssetPath(loaded.TilemapPath))
 		if loaded.DecoratorErr != nil {
 			spxlog.Info("Tilemap: no decorator.json found at %s (this is OK if no decorators)", loaded.DecoratorPath)
@@ -208,12 +213,15 @@ func (p *gameTilemapMgr) loadDecoratorsFromJSON() {
 
 func (p *gameTilemapMgr) parseTilemap() {
 	if p.useNewLoader {
+		// 新格式瓦片节点已由 TilemapparserMgr 创建，这里只补装饰物。
 		p.loadDecoratorsFromJSON()
 		return
 	}
 	if p.datas == nil {
 		return
 	}
+	// 旧格式由 Go 展开 tileset、layer 和坐标，分别调用 TilemapMgr 设置纹理/碰撞、
+	// 创建图层并批量放置瓦片；随后创建装饰物并根据实际瓦片范围修正世界尺寸。
 	p.loadTilemaps(p.datas)
 	p.loadDecorators(p.datas)
 	p.calcWorldSize()

@@ -28,6 +28,14 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+/*
+ * Godot Web Emscripten 运行时工具的 SPX 覆盖版本，由 SCsub 替换引擎默认实现。
+ * 直接调用方：其余 library_godot_*.js 和 SPX JS Library；顶层来源：Godot C++
+ * Web 平台调用及 Go/Godot WASM 桥。更新 Godot 版本时应与上游实现同步核对。
+ * malloc/free、字符串和 HEAP* 操作针对 Godot WASM 线性内存：分配者负责明确释放，
+ * 且内存增长后不得长期缓存旧 TypedArray 视图或把临时指针带过异步边界。
+ */
+
 const GodotRuntime = {
 	$GodotRuntime: {
 		/*

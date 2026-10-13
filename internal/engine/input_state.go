@@ -33,6 +33,7 @@ type MouseEvent struct {
 }
 
 type keyInputState struct {
+	// pending 由平台回调写入，ready 在引擎帧边界发布给唯一消费者。
 	mu       sync.Mutex
 	pending  []KeyEvent
 	ready    []KeyEvent
@@ -41,6 +42,7 @@ type keyInputState struct {
 }
 
 type mouseInputState struct {
+	// buttons 提供无锁即时查询；pending/ready 保留同一帧内的有序边沿。
 	mu            sync.Mutex
 	buttons       [4]atomic.Bool
 	pending       []MouseEvent
@@ -66,22 +68,25 @@ func AnyMouseButtonPressed() bool {
 	return IsMouseButtonPressed(1) || IsMouseButtonPressed(2)
 }
 
-// GetKeyEvents drains the ordered key edges for the current update.
+// GetKeyEvents 取走本帧 ready 中按顺序缓存的键盘按下/抬起边沿，并清空 ready。
+// 普通实时输入由 inputEventLoop 调用它；当前脚本事件 API 只把按下边沿转成 OnKey。
 func GetKeyEvents(dst []KeyEvent) []KeyEvent {
 	return keyInput.drain(dst)
 }
 
-// GetKeyInput drains key edges and returns a sorted held-key snapshot.
+// GetKeyInput 供输入录制/回放采样使用：取走键盘边沿，并返回排序后的当前按住键快照。
 func GetKeyInput(dst []KeyEvent) ([]KeyEvent, []int64) {
 	return keyInput.drainInput(dst)
 }
 
-// GetMouseInput drains button edges and returns the held-button snapshot.
+// GetMouseInput 取走本帧鼠标按钮边沿，并返回发布该批边沿时的按住状态位图。
+// 实时 inputEventLoop 与输入会话共享此入口，由上层保证每帧只有一个消费者。
 func GetMouseInput(dst []MouseEvent) ([]MouseEvent, uint8) {
 	return mouseInput.drainInput(dst)
 }
 
-// GetMouseEvents drains the ordered mouse-button edges for the current update.
+// GetMouseEvents 只返回鼠标按钮边沿，作为 GetMouseInput 的便捷封装（会丢弃按住状态快照）。
+// 当前输入会话直接使用 GetMouseInput，同时需要边沿和按住状态。
 func GetMouseEvents(dst []MouseEvent) []MouseEvent {
 	events, _ := GetMouseInput(dst)
 	return events
@@ -104,6 +109,8 @@ func ResetInputState() {
 	mouseInput.reset()
 }
 
+// onKeyPressed/onKeyReleased 是 Godot 输入回调的 Go 侧入口：记录当前按住状态，
+// 并把有序按键边沿放入 pending，等待 onUpdate 帧边界缓存后由输入循环取走。
 func onKeyPressed(id int64) {
 	queueKeyEvent(id, true)
 }
@@ -126,6 +133,8 @@ func queueKeyEvent(id int64, pressed bool) {
 	keyInput.mu.Unlock()
 }
 
+// onMousePressed/onMouseReleased 是 Godot 鼠标按钮回调的 Go 侧入口：立即更新按住状态，
+// 并把去重后的边沿写入 pending，等待下一引擎帧发布。
 func onMousePressed(id int64) {
 	queueMouseEvent(id, true)
 }
@@ -148,10 +157,14 @@ func queueMouseEvent(id int64, pressed bool) {
 	mouseInput.mu.Unlock()
 }
 
+// cacheKeyEvents 在引擎帧边界把输入回调写入的 pending 键盘边沿转入 ready；
+// ready 随后由 inputEventLoop.GetKeyEvents 或输入会话的 GetKeyInput 消费。
 func cacheKeyEvents() {
 	keyInput.cache()
 }
 
+// cacheMouseEvents 在引擎帧边界把 pending 鼠标边沿转入 ready，并刷新按住状态快照；
+// ready/快照随后由实时循环或输入会话中的唯一消费者取走。
 func cacheMouseEvents() {
 	mouseInput.cache()
 }

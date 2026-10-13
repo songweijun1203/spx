@@ -22,12 +22,17 @@ import (
 	"github.com/goplus/spx/v3/pkg/spx/pkg/engine"
 )
 
+// LinkFFI 建立不连接 Godot 的 pure_engine 会话。
+// 平台：仅启用 pure_engine 构建标签时编译；直接上级为 gdengine.PrepareLink()。
+// 返回的会话会立即就绪，第二个返回值固定为 true，以沿用无 Godot 回调的解释器流程。
 func LinkFFI() (*LinkSession, bool) {
 	return newLinkSession(func(ready func()) {
 		ready()
 	}, nil), true
 }
 
+// RegisterCallbacks 在 pure_engine 模式下无需注册平台回调。
+// 直接上级：internal/gdengine.PrepareLink()。
 func RegisterCallbacks(_ engine.CallbackInfo) {
 
 }

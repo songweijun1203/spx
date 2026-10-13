@@ -51,10 +51,13 @@ SpxUi::~SpxUi() {
 }
 
 Control *SpxUi::get_control_item() const {
+	// ObjectID 是弱身份；Godot 对象销毁后 ObjectDB 返回 nullptr，避免悬空裸指针。
 	return Object::cast_to<Control>(ObjectDB::get_instance(control_id));
 }
 
 Error SpxUi::set_control_item(Control *p_control, SpxUiBindingListener *p_listener) {
+	// 直接调用方：SpxUiMgr::on_create_node/bind_node；顶层来自 Go UI 创建或场景节点绑定。
+	// SpxUiBinding 作为 Control 子节点随父节点释放，本包装器只保存 ObjectID。
 	ERR_FAIL_NULL_V(p_control, ERR_INVALID_PARAMETER);
 	detach_control_binding();
 
@@ -139,6 +142,7 @@ GdInt SpxUi::get_type() {
 }
 
 void SpxUi::queue_free() {
+	// 直接调用方：SpxUiMgr 销毁/重置；Godot 在帧末安全释放节点并发送 PREDELETE 通知。
 	auto node = get_control_item();
 	if (node != nullptr) {
 		node->queue_free();

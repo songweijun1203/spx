@@ -39,22 +39,24 @@
 #include "scene/resources/2d/tile_set.h"
 #include "spx_sprite.h"
 
+// 瓦片编辑器一次 _draw() 使用的只读绘制快照。
+// 由 SpxDrawTiles::_draw 构造并传给 LayerRenderer，不跨帧保存任何裸指针。
 struct DrawContext {
-	TileMapLayer *map_layer;
+	TileMapLayer *map_layer; // 当前编辑层的借用指针；挂树后由父节点/SceneTree 持有。
 
-	Vector2i cell_size;
-	Color grid_color;
-	float axis_width;
-	int guide_rect_radius;
+	Vector2i cell_size; // 单元格像素尺寸。
+	Color grid_color; // 网格线颜色。
+	float axis_width; // 坐标轴绘制宽度。
+	int guide_rect_radius; // 鼠标指示框向外扩展的格数。
 
-	Vector2 layer_pos;
-	Vector2 mouse_pos;
+	Vector2 layer_pos; // 当前层相对编辑节点的位置。
+	Vector2 mouse_pos; // 鼠标在编辑节点本地坐标中的位置。
 
-	Rect2 used_rect;
-	Ref<Texture2D> current_texture;
+	Rect2 used_rect; // 当前层已使用区域的像素包围盒。
+	Ref<Texture2D> current_texture; // 当前画笔纹理，Ref 在本轮绘制期间保活。
 
-	bool axis_flipped;
-	bool axis_dragging;
+	bool axis_flipped; // 坐标轴方向是否翻转。
+	bool axis_dragging; // 当前是否正在拖动层原点。
 
 	DrawContext &set_layer(TileMapLayer *layer) {
 		map_layer = layer;
@@ -100,6 +102,8 @@ struct DrawContext {
 	}
 };
 
+// 瓦片编辑辅助图形渲染器，只通过 Node2D::draw_* 写入父节点当前画布项。
+// 直接调用方：SpxDrawTiles::_draw；顶层调用方：Godot NOTIFICATION_DRAW。
 class LayerRenderer {
 private:
 	void _draw_axis(Node2D *parent_node, const DrawContext &ctx);
@@ -116,9 +120,11 @@ public:
 };
 
 template <typename K, typename V>
+// 小型双向映射，用于保持“路径<->纹理”和“纹理<->source_id”一致。
+// 仅由 SpxDrawTiles 在 Godot 主线程访问，不承担并发同步。
 class BiMap {
-	HashMap<K, V> forward;
-	HashMap<V, K> backward;
+	HashMap<K, V> forward; // K 到 V 的正向索引。
+	HashMap<V, K> backward; // V 到 K 的反向索引，必须与 forward 同步更新。
 
 public:
 	void insert(const K &k, const V &v) {
@@ -159,51 +165,58 @@ public:
 	bool empty() const { return forward.is_empty(); }
 };
 
+// 一次可撤销的格子变更，完整保存变更前/后的 TileSet 定位信息。
 struct TileAction {
-	int layer_index;
-	Vector2i coords;
-	bool placed;
-	int source_id;
-	Vector2i atlas_coord;
-	int alternative_tile;
+	int layer_index; // 目标 TileMapLayer 索引。
+	Vector2i coords; // 层内网格坐标。
+	bool placed; // true 表示原操作为放置，false 表示擦除。
+	int source_id; // TileSet atlas source ID。
+	Vector2i atlas_coord; // source 内的图集坐标。
+	int alternative_tile; // Godot alternative tile 编号。
 };
 
+// SPX 运行时瓦片编辑节点：同时负责编辑器输入、预览绘制、TileSet 缓存与撤销栈。
+// 直接调用方：SpxTilemapMgr；输入/绘制回调由 Godot SceneTree 调用。
+// 顶层调用方：Go Tilemap API，或 Godot 输入传播与 CanvasItem 绘制阶段。
+// Godot 规则：GDCLASS 节点的方法需在 _bind_methods 注册后才能被反射；queue_redraw()
+// 只请求未来的 NOTIFICATION_DRAW，不能期待调用点立即执行 _draw()。TileSet 与 atlas
+// source 都是 RefCounted 资源；get_tile_data() 返回的 TileData* 只借用，不能自行释放。
 class SpxDrawTiles : public Node2D {
 	GDCLASS(SpxDrawTiles, Node2D);
 
 private:
-	Ref<TileSet> shared_tile_set;
-	Ref<Texture2D> current_texture;
+	Ref<TileSet> shared_tile_set; // 所有动态层共用的强引用资源；层和本节点共同为其保活。
+	Ref<Texture2D> current_texture; // 当前编辑笔刷的原始纹理。
 
-	Vector<TileAction> undo_stack;
-	Vector<TileAction> redo_stack;
+	Vector<TileAction> undo_stack; // 已执行操作，末尾为下一次撤销目标。
+	Vector<TileAction> redo_stack; // 已撤销操作，执行新操作时清空。
 
-	BiMap<String, Ref<Texture2D>> path_cached_textures_bimap;
-	BiMap<Ref<Texture2D>, int> scaled_texture_source_ids_bimap;
-	HashMap<Ref<Texture2D>, Ref<ImageTexture>> texture_scaled_cache_map;
-	HashMap<Ref<ImageTexture>, String> scaled_texture_path_map;
-	HashMap<int, TileMapLayer *> index_layer_map;
-	int max_layer_index = -1;
-	int next_source_id = 1;
+	BiMap<String, Ref<Texture2D>> path_cached_textures_bimap; // SPX 路径与已加载原纹理的双向缓存。
+	BiMap<Ref<Texture2D>, int> scaled_texture_source_ids_bimap; // 缩放纹理与 TileSet source ID 的双向缓存。
+	HashMap<Ref<Texture2D>, Ref<ImageTexture>> texture_scaled_cache_map; // 原纹理到单格尺寸纹理的缓存。
+	HashMap<Ref<ImageTexture>, String> scaled_texture_path_map; // 缩放纹理回查原 SPX 路径。
+	HashMap<int, TileMapLayer *> index_layer_map; // 层号到 SceneTree 子节点的借用指针映射。
+	int max_layer_index = -1; // 当前创建过的最大层号，用于保持层级顺序。
+	int next_source_id = 1; // 下一个动态 TileSetAtlasSource ID；0 保留给 Godot/既有数据。
 
-	const String UNIQUE_LAYER_PREFIX = "spx_draw_tiles_layer_";
-	Vector2i default_cell_size{ 16, 16 };
-	Vector2i default_atlas_coord{ 0, 0 };
-	int default_physics_layer = 0;
-	int current_layer_index = 0;
+	const String UNIQUE_LAYER_PREFIX = "spx_draw_tiles_layer_"; // 动态层节点名的稳定前缀。
+	Vector2i default_cell_size{ 16, 16 }; // 默认方形格尺寸。
+	Vector2i default_atlas_coord{ 0, 0 }; // 每个独立纹理 source 使用的默认 atlas 坐标。
+	int default_physics_layer = 0; // 自动碰撞多边形写入的 TileSet 物理层。
+	int current_layer_index = 0; // 当前编辑目标层号。
 
-	bool exit_editor = true;
-	bool axis_flipped = false;
-	bool axis_dragging = false;
-	bool tile_placing = false;
-	static constexpr float drag_threshold = 10.0;
-	Vector2 drag_start;
-	Vector2 layer_start_pos;
+	bool exit_editor = true; // true 时关闭交互辅助绘制，但保留已有瓦片。
+	bool axis_flipped = false; // 编辑坐标轴是否翻转。
+	bool axis_dragging = false; // 鼠标是否已进入层原点拖动状态。
+	bool tile_placing = false; // 本次按压是否正在连续放置/擦除瓦片。
+	static constexpr float drag_threshold = 10.0; // 从点击切换为拖动的像素阈值。
+	Vector2 drag_start; // 本次拖动开始时的鼠标位置。
+	Vector2 layer_start_pos; // 本次拖动开始时当前层的位置。
 
-	const Color GRID_COLOR{ 1.0, 1.0, 0.0, 0.5 };
-	static constexpr int GUIDE_RECT_RADIUS = 5;
-	static constexpr float AXIS_WIDTH = 5;
-	LayerRenderer renderer;
+	const Color GRID_COLOR{ 1.0, 1.0, 0.0, 0.5 }; // 编辑网格颜色。
+	static constexpr int GUIDE_RECT_RADIUS = 5; // 指示区域半径（格）。
+	static constexpr float AXIS_WIDTH = 5; // 原点坐标轴宽度（像素）。
+	LayerRenderer renderer; // 无所有权资源的即时辅助绘制器。
 
 protected:
 	static void _bind_methods();
@@ -217,14 +230,14 @@ public:
 	SpxDrawTiles() = default;
 	~SpxDrawTiles() = default;
 
-	// Static collision shapes for reuse
-	static inline Vector<Vector2> default_collision_rect{};
-	static inline Vector<Vector2> no_collision_array{};
+	// 复用的默认碰撞点集；静态存储只保存数值，不持有 Godot Object。
+	static inline Vector<Vector2> default_collision_rect{}; // 随格尺寸刷新的一格矩形碰撞多边形。
+	static inline Vector<Vector2> no_collision_array{}; // 显式表示当前瓦片不创建碰撞多边形。
 
-	// Update collision rect based on current cell size
+	// 根据当前格尺寸刷新默认矩形碰撞点集。
 	void update_default_collision_rect();
 
-	// spx interface
+	// 直接调用方：SpxTilemapMgr；顶层调用方：Go engine.TilemapMgr 的对应接口。
 	void set_layer_index_spx(GdInt index);
 	void set_tile_texture_spx(GdString texture_path, const Vector<Vector2> *collision_points);
 	void place_tiles_spx(GdArray positions, GdString texture_path);

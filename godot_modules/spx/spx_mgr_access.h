@@ -34,7 +34,10 @@
 class SpxEngine;
 class SpxAudioBusPool;
 
-// Access the managers owned by the current engine.
+// 当前 SpxEngine 所有 Manager 的快捷访问宏。
+// 返回值均是 singleton 内的非拥有型指针，只能在引擎已初始化且未 shutdown 时使用；
+// 若后续操作触碰 Node/SceneTree，还必须遵守 Godot 主线程规则。
+// 直接调用方：各 Manager/对象实现；顶层调用方：Go SPX API 或 Godot 主循环回调。
 #define inputMgr SpxEngine::get_singleton()->get_input()
 #define audioMgr SpxEngine::get_singleton()->get_audio()
 #define physicsMgr SpxEngine::get_singleton()->get_physics()
@@ -50,7 +53,9 @@ class SpxAudioBusPool;
 #define tilemapMgr SpxEngine::get_singleton()->get_tilemap()
 #define tilemapparserMgr SpxEngine::get_singleton()->get_tilemapparser()
 
+// 音频总线池是独立进程级单例，宏不转移其所有权。
 #define audioPool SpxAudioBusPool::get_singleton()
+// 当前 C++ -> Go/JS 回调表的借用指针，只允许在同步调用期间使用。
 #define SPX_CALLBACK SpxEngine::get_singleton()->get_callbacks()
 
 #endif // SPX_MGR_ACCESS_H

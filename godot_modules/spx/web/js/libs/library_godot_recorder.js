@@ -1,10 +1,21 @@
 
 /**
- * Web Audio Recorder using MediaRecorder API for web audio recording
- * Implementation option 1: MediaRecorder API
+ * SPX/Godot Web 录音与录屏的 Emscripten JavaScript Library。
+ *
+ * 直接调用方：MovieWriterWebM 的 godot_audio/video_recorder_* C++ 导入，以及宿主
+ * 通过 Module.tryStartRecording/tryStopRecording 发起的录制；顶层调用方为 Godot
+ * MovieWriter、SPX CLI --movie 或浏览器页面录屏按钮。
+ *
+ * 视频来自 Canvas.captureStream，音频来自 Godot WebAudio Master Bus，二者合并为
+ * MediaStream 后交给 MediaRecorder。MediaRecorder、DOM、Canvas 和下载 API 属于
+ * 浏览器主线程能力；带 __proxy:'sync' 的入口在线程版 Emscripten 中同步代理过去。
+ * Blob/MediaStream/MediaRecorder 都是浏览器对象，不位于 WASM 线性内存；只有传给
+ * C++ 的字符串参数/返回指针通过 GodotRuntime 在 WASM 内存中临时分配。
  */
 const GodotAudioRecorder = {
+	// 链接期依赖 GodotAudio，保证录制器初始化时可访问 AudioContext 和 Master Bus。
 	$GodotAudioRecorder__deps: ['$GodotAudio'],
+	// Emscripten 合并 JS Library 后执行，将宿主可调用的高层 API 暴露到 Module。
 	$GodotAudioRecorder__postset: [
 		'Module["downloadRecordedVideo"] = GodotAudioRecorder.downloadRecordedVideo;',
 		'Module["getRecordedVideoBlob"] = GodotAudioRecorder.getRecordedVideoBlob;',
@@ -13,35 +24,55 @@ const GodotAudioRecorder = {
 		'Module["tryStopRecording"] = GodotAudioRecorder.tryStopRecording;',
 	].join(''),
 	$GodotAudioRecorder: {
-		// Private state
+		// 音频录制状态。该对象是 Module 级单例，仅由浏览器主线程读写。
+		// 是否已创建录音目的节点并连接 Godot Master Bus。
 		initialized: false,
+		// 浏览器拥有的当前音频 MediaRecorder；cleanup 解除引用。
 		mediaRecorder: null,
+		// 本录制器创建的 MediaStreamAudioDestinationNode；cleanup 时 disconnect。
 		mediaStreamDestination: null,
+		// ondataavailable 交付的音频 Blob 分片；数组拥有引用，浏览器管理 Blob 内存。
 		recordedChunks: [],
+		// 音频和视频录制共用的活动标志，防止同一单例重复 start。
 		isRecording: false,
+		// 经 MediaRecorder.isTypeSupported 选择的当前音频或视频 MIME 类型。
 		selectedMimeType: '',
 
-		// Video recording related
+		// 视频录制状态。
+		// 是否已完成 Canvas、音轨和合并流的初始化。
 		videoRecorderInitialized: false,
+		// 浏览器拥有的当前视频 MediaRecorder。
 		videoMediaRecorder: null,
+		// Canvas.captureStream 返回的流；本录制器负责在 cleanup 中 stop 其 tracks。
 		videoStream: null,
+		// 合并 Canvas 视频轨与 Godot 音频轨的流；本录制器负责停止 tracks。
 		combinedStream: null,
+		// ondataavailable 交付的视频 Blob 分片。
 		videoRecordedChunks: [],
+		// 宿主借给录制器的 Canvas，不转移 DOM 所有权，不得由 cleanup 删除。
 		targetCanvas: null,  // Add explicit targetCanvas property
+		// 传给 Canvas.captureStream 的目标帧率；实际节奏由浏览器合成器决定。
 		videoFPS: 30,
 
-		// Performance optimization cache
+		// Blob 物化缓存，音频/视频路径共用；新 chunk 到达时 cachedBlob 失效。
+		// 最近一次物化 Blob 的字节数。
 		cachedDataSize: 0,
+		// cachedBlob 对应的 chunk 数。
 		lastChunkCount: 0,
+		// 当前分片组合出的 Blob；不复制分片内容，生命周期由浏览器管理。
 		cachedBlob: null,
+		// 上次物化时间，仅用于限制诊断频率。
 		lastBlobCreationTime: 0,
 
-		// New data state tracking (for quick checks)
+		// 轻量轮询状态，避免 C++ 每帧为了判定新数据而反复创建 Blob。
+		// dataavailable 到达后置位，查询消费后清除。
 		hasNewData: false,
+		// 上次轻量查询见到的 chunk 数。
 		lastCheckedChunkCount: 0,
 
 		/**
-		 * Initialize recorder (does not start recording automatically)
+		 * 初始化音频录制图，不会自动开始 MediaRecorder。
+		 * 直接调用方：godot_audio_recorder_init；顶层为 MovieWriterWebM::write_begin。
 		 */
 		init: function() {
 			if (!GodotAudio.ctx) {
@@ -50,13 +81,13 @@ const GodotAudioRecorder = {
 			}
 
 			try {
-				// Create recording destination - MediaStreamDestination
+				// MediaStreamDestination 把 Godot WebAudio 图的输出变成可录制音轨。
 				this.mediaStreamDestination = GodotAudio.ctx.createMediaStreamDestination();
 
 				// Select supported MIME type
 				this.selectedMimeType = this.getSupportedMimeType();
 
-				// Connect master audio bus to recording destination
+				// 旁路连接 Master Bus；既保留扬声器输出，也向录制流提供同一混音。
 				const masterBus = GodotAudio.buses[0];
 				if (masterBus) {
 					masterBus.getOutputNode().connect(this.mediaStreamDestination);
@@ -75,7 +106,7 @@ const GodotAudioRecorder = {
 		},
 
 		/**
-		 * Start recording
+		 * 开始纯音频录制。MediaRecorder 事件异步到达，start 成功不表示已有数据。
 		 */
 		startRecording: function() {
 			if (!this.initialized) {
@@ -96,7 +127,7 @@ const GodotAudioRecorder = {
 
 				this.recordedChunks = [];
 
-				// Handle recorded data
+				// 浏览器每个 timeslice 或 stop 时异步交付 Blob 分片。
 				this.mediaRecorder.ondataavailable = (event) => {
 					if (event.data.size > 0) {
 						this.recordedChunks.push(event.data);
@@ -122,7 +153,7 @@ const GodotAudioRecorder = {
 				this.mediaRecorder.onstop = () => {
 				};
 
-				// Start recording (one chunk every 100ms)
+				// 请求每约 100ms 交付分片；浏览器不保证精确时间间隔。
 				this.mediaRecorder.start(100);
 				this.isRecording = true;
 
@@ -135,7 +166,8 @@ const GodotAudioRecorder = {
 		},
 
 		/**
-		 * Stop recording
+		 * 请求停止录音。MediaRecorder.stop() 会异步触发最终 dataavailable/onstop，
+		 * 因此调用返回时 Blob 可能尚未包含最后一个分片。
 		 */
 		stopRecording: function() {
 			if (this.mediaRecorder && this.isRecording) {
@@ -217,7 +249,7 @@ const GodotAudioRecorder = {
 		},
 
 		/**
-		 * Clean up resources
+		 * 清理音频录制资源。直接调用方：godot_audio_recorder_cleanup/MovieWriterWebM。
 		 */
 		cleanup: function() {
 			this.stopRecording();
@@ -264,7 +296,8 @@ const GodotAudioRecorder = {
 		},
 
 		/**
-		 * Initialize Canvas video recorder (audio and video merged recording)
+		 * 初始化 Canvas 视频与 Godot 音频的合并录制。
+		 * Canvas 由宿主借入；新建的 MediaStream 和 tracks 由本对象清理。
 		 * @param {number} fps Video frame rate, default 30
 		 * @returns {boolean} Whether successful
 		 */
@@ -283,7 +316,7 @@ const GodotAudioRecorder = {
 					return false;
 				}
 
-				// 2. Get Canvas video stream
+				// captureStream 由浏览器合成器驱动，并不消费 Godot write_frame 传入的图像。
 				this.videoStream = GodotAudioRecorder.targetCanvas.captureStream(fps);
 
 				// 3. Create audio recording destination (if not already created)
@@ -349,6 +382,8 @@ const GodotAudioRecorder = {
 		},
 
 		tryStartRecording: function(filename = "recording") {
+			// 直接调用方：Module.tryStartRecording；顶层为浏览器宿主录屏按钮。
+			// 先让 C++ MovieRecorderManager 建立权威状态，再启动浏览器 MediaRecorder。
 			try {
 				// 1. Check preconditions
 				if (!GodotAudioRecorder.targetCanvas) {
@@ -390,6 +425,8 @@ const GodotAudioRecorder = {
 		},
 
 		tryStopRecording: async function() {
+			// 直接调用方：Module.tryStopRecording；顶层为浏览器宿主。
+			// stop 是异步的，短暂等待用于接收最终分片，再同步 C++ 状态并返回 Blob。
 			try {
 				// 1. Check if recording is active
 				if (Module['_godot_web_recording_is_active'] && !Module['_godot_web_recording_is_active']()) {
@@ -427,7 +464,7 @@ const GodotAudioRecorder = {
 		},
 
 		/**
-		 * Start video recording (audio and video merged)
+		 * 开始音视频合并录制。直接调用方：godot_video_recorder_start 或 tryStartRecording。
 		 * @returns {boolean}
 		 */
 		startVideoRecording: function() {
@@ -467,7 +504,7 @@ const GodotAudioRecorder = {
 				this.videoMediaRecorder.onstop = () => {
 				};
 
-				// Start recording (one chunk every 100ms)
+				// timeslice 只控制期望分片频率，不是视频编码帧率。
 				this.videoMediaRecorder.start(100);
 				this.isRecording = true;
 
@@ -493,6 +530,7 @@ const GodotAudioRecorder = {
 			return false;
 		},
 		setRecorderCanvas: function(canvas) {
+			// 仅保存借用引用；Canvas 仍由 Engine/GodotDisplayConfig 或宿主页面拥有。
 			GodotAudioRecorder.targetCanvas = canvas;
 		},
 
@@ -534,6 +572,7 @@ const GodotAudioRecorder = {
 			}
 
 			const url = URL.createObjectURL(blob);
+			// object URL 临时持有 Blob 访问句柄；触发下载后必须 revoke。
 			const a = document.createElement('a');
 			a.href = url;
 			a.download = filename || 'recorded_video.' + blob.type.split('/')[1].split(';')[0];
@@ -543,7 +582,7 @@ const GodotAudioRecorder = {
 			URL.revokeObjectURL(url);
 		},
 		/**
-		 * Clean up video recording resources
+		 * 清理视频录制资源并停止所有由本对象持有的 MediaStreamTrack。
 		 */
 		cleanupVideoRecorder: function() {
 			this.stopVideoRecording();
@@ -593,7 +632,8 @@ const GodotAudioRecorder = {
 		},
 	},
 
-	// C++ interface functions
+	// C++ 导入接口。__sig 是 Emscripten WASM 签名；__proxy:'sync' 确保线程构建时
+	// MediaRecorder/WebAudio/DOM 操作在浏览器主线程执行，并同步把标量结果返回 C++。
 	godot_audio_recorder_init__proxy: 'sync',
 	godot_audio_recorder_init__sig: 'i',
 	/**
@@ -657,6 +697,7 @@ const GodotAudioRecorder = {
 	 * @returns {number} String pointer
 	 */
 	godot_audio_recorder_get_mime_type: function() {
+		// 返回值位于 WASM 线性内存；C++ 读取后需按 GodotRuntime 字符串约定释放。
 		const mimeType = GodotAudioRecorder.getSupportedMimeType();
 		return GodotRuntime.allocString(mimeType);
 	},
@@ -716,7 +757,7 @@ const GodotAudioRecorder = {
 		return GodotAudioRecorder.hasRecordingData() ? 1 : 0;
 	},
 
-	// ========== New C++ interface functions for video recording ==========
+	// 视频录制 C++ 导入接口，直接调用方为 MovieWriterWebM。
 
 	godot_video_recorder_init__proxy: 'sync',
 	godot_video_recorder_init__sig: 'ii',
@@ -776,6 +817,7 @@ const GodotAudioRecorder = {
 	 * @returns {number} String pointer
 	 */
 	godot_video_recorder_get_mime_type: function() {
+		// 与音频 MIME 接口相同，返回的是新分配的 WASM UTF-8 字符串地址。
 		const mimeType = GodotAudioRecorder.selectedMimeType || 'video/webm';
 		return GodotRuntime.allocString(mimeType);
 	},
@@ -821,16 +863,19 @@ const GodotAudioRecorder = {
 	},
 };
 
-// Add GodotAudioRecorder to GodotAudio object
+// 同时挂到 GodotAudio 便于 Godot Web 音频代码内部访问；不复制状态对象。
 if (typeof GodotAudio !== 'undefined') {
 	GodotAudio.Recorder = GodotAudioRecorder;
 }
 
 autoAddDeps(GodotAudioRecorder, '$GodotAudioRecorder');
+// Emscripten 链接阶段把导入函数合并到最终 LibraryManager。
 mergeInto(LibraryManager.library, GodotAudioRecorder);
 
 /**
- * Web file download utility functions
+ * Web 文件下载工具。通过临时 object URL 和隐藏 <a> 触发浏览器下载。
+ * 直接调用方：下面的 C++ 导入接口或录制器；顶层为 MovieWriter/宿主下载命令。
+ * DOM 操作依赖浏览器主线程，虚拟文件读取来自 Emscripten FS。
  */
 const GodotWebDownload = {
 	$GodotWebDownload: {
@@ -897,7 +942,7 @@ const GodotWebDownload = {
 		}
 	},
 
-	// C++ interface functions
+	// C++ 导入接口；__proxy:'sync' 把 DOM 下载操作代理到浏览器主线程。
 	godot_web_download_recorded_audio__proxy: 'sync',
 	godot_web_download_recorded_audio__sig: 'ii',
 	/**

@@ -71,6 +71,12 @@ func SetCoroutines(co *coroutine.Coroutines) {
 	profiler.SetGco(co)
 }
 
+// Go 把一项属于当前游戏生命周期的工作创建为受 SPX 调度器管理的 Thread。
+//
+// 与直接 gco.Create 相比，它先捕获当前 gameBinding，并在 Thread 真正取得 runMu 后
+// 再确认绑定仍是当前一局。启动加载协程和 bootstrap 协程都通过这里创建，因此 reset
+// 即使发生在“创建之后、开始执行之前”，旧任务也不会写入新游戏。此函数只负责创建，
+// 不等待任务结束；Thread 可在 Create 后立即竞争 runMu，不必等到下一次 gco.Update。
 func Go(tobj coroutine.ThreadObj, fn func(ctx context.Context)) {
 	binding, ok := captureRuntimeWork()
 	if !ok {

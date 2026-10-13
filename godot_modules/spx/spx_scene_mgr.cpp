@@ -49,12 +49,16 @@
 #include "spx_sprite_mgr.h"
 
 void SpxSceneMgr::_request_export(SubViewport *viewport) {
+	// SubViewport 创建当帧尚无可靠纹理内容，延后到 on_update 再读取。
+	// 直接调用方：export_scene_as_png；顶层调用方：瓦片编辑器 Ctrl+E 输入流程。
 	viewport_to_export = viewport;
 	export_pending = true;
 	elapsed = 0.0;
 }
 
 void SpxSceneMgr::_export_vp_png(SubViewport *viewport) {
+	// 直接调用方：on_update；顶层调用方：瓦片编辑器 Ctrl+E 导出命令。
+	// Godot 规则：user:// 是可写沙盒路径，globalize_path 仅用于向用户展示真实路径。
 	Ref<Image> image = viewport->get_texture()->get_image();
 	Error err = image->save_png(DEFAULT_SAVE_PATH);
 	String full_path = ProjectSettings::get_singleton()->globalize_path(DEFAULT_SAVE_PATH);
@@ -64,10 +68,12 @@ void SpxSceneMgr::_export_vp_png(SubViewport *viewport) {
 		print_error("Failed to save TileMap scene!");
 	}
 
+	// queue_free 为延迟释放；调用后不应再通过 viewport_to_export 使用该节点。
 	viewport->queue_free();
 }
 
 void SpxSceneMgr::on_awake() {
+	// 直接调用方：SpxEngine 生命周期；顶层调用方：Go runtime 启动。
 	pure_sprite_root = memnew(Node2D);
 	pure_sprite_root->set_name("pure_sprite_root");
 	get_spx_root()->add_child(pure_sprite_root);
@@ -84,7 +90,7 @@ void SpxSceneMgr::on_update(float delta) {
 }
 
 void SpxSceneMgr::on_destroy() {
-	// Clear pure sprites without recreating the root node (we're destroying)
+	// 销毁阶段只清理索引和节点，不再重建根节点。
 	id_pure_sprites.clear();
 	SpxLayerSorter::instance().reset();
 	if (pure_sprite_root) {
@@ -99,7 +105,7 @@ void SpxSceneMgr::on_reset(int reset_code) {
 
 void SpxSceneMgr::clear_pure_sprites() {
 	id_pure_sprites.clear();
-	// Clear SpxLayerSorter to avoid dangling pointers
+	// 排序器缓存的是借用指针，释放节点前必须清空以免悬空。
 	SpxLayerSorter::instance().reset();
 	if (pure_sprite_root) {
 		pure_sprite_root->queue_free();
@@ -121,11 +127,10 @@ void SpxSceneMgr::destroy_pure_sprite(GdObj id) {
 		auto sprite = id_pure_sprites[id];
 		id_pure_sprites.erase(id);
 
-		// Clear SpxLayerSorter to avoid dangling pointers
-		// Note: This is conservative but safe. Could be optimized later with per-id removal.
+		// 排序器当前不支持按 ID 删除，因此保守清空全部借用指针缓存。
 		SpxLayerSorter::instance().reset();
 
-		// Cast to Node2D to remove from scene tree
+		// Godot 规则：SceneTree 中的 Node 使用 queue_free 在安全时机释放。
 		Node2D *node = dynamic_cast<Node2D *>(sprite);
 		if (node && node->is_inside_tree()) {
 			node->queue_free();
@@ -142,6 +147,8 @@ void SpxSceneMgr::collect_sortable_sprites(Vector<ISortableSprite *> &out) {
 }
 
 Rect2 SpxSceneMgr::get_scene_bounds(Node *node) {
+	// 直接调用方：导出与 SpxPathFinder；顶层调用方：Go 导出/寻路范围计算。
+	// 递归结果统一转换到全局坐标，才能合并不同父节点下的可视边界。
 	Rect2 total_rect;
 
 	for (int i = 0; i < node->get_child_count(); i++) {
@@ -190,6 +197,7 @@ Rect2 SpxSceneMgr::get_tilemap_bounds(TileMapLayer *layer) {
 }
 
 void SpxSceneMgr::export_scene_as_png(Node *root) {
+	// 直接调用方：SpxDrawTiles::input；顶层调用方：Godot 键盘事件 Ctrl+E。
 	if (!root) {
 		print_error("Root is null");
 		return;
@@ -206,16 +214,19 @@ void SpxSceneMgr::export_scene_as_png(Node *root) {
 	viewport->set_update_mode(SubViewport::UPDATE_ALWAYS);
 	viewport->set_clear_mode(SubViewport::CLEAR_MODE_ALWAYS);
 
+	// 复制目标树，避免为了离屏渲染而移动真实游戏节点。
 	Node *copy = root->duplicate(Node::DUPLICATE_USE_INSTANTIATION);
 	if (Node2D *n2d = Object::cast_to<Node2D>(copy)) {
 		n2d->set_position(n2d->get_global_position() - rect.position);
 	}
 	viewport->add_child(copy);
+	// copy 由 viewport 持有；viewport 挂入当前场景后由 SceneTree 持有，Manager 只借用到导出完成。
 	get_tree()->get_current_scene()->add_child(viewport);
 	_request_export(viewport);
 }
 
 GdObj SpxSceneMgr::create_render_sprite(GdString texture_path, GdVec2 pos, GdFloat degree, GdVec2 scale, GdInt zindex, GdVec2 pivot) {
+	// 直接调用方：生成 ABI/create_pure_sprite；顶层调用方：Go 轻量渲染精灵 API。
 	if (pure_sprite_root == nullptr) {
 		return NULL_OBJECT_ID;
 	}
@@ -262,13 +273,13 @@ GdObj SpxSceneMgr::create_static_sprite(GdString texture_path, GdVec2 pos, GdFlo
 	}
 
 	auto path_str = SpxStr(texture_path);
-	// Create StaticBody2D
+	// 静态精灵使用 StaticBody2D，使 Godot 物理服务器负责静态碰撞。
 	SpxStaticSprite *static_body = memnew(SpxStaticSprite);
 	static_body->set_position(spx_to_godot_vec2(pos));
 	static_body->set_rotation_degrees(degree);
 	static_body->set_name(path_str.get_file());
 
-	// Load and create sprite child
+	// 可视 Sprite2D 与物理 Body 分离，pivot 只作用于纹理子节点。
 	Sprite2D *sprite = memnew(Sprite2D);
 	Ref<Texture2D> texture = resMgr->load_texture(path_str, true);
 	sprite->set_texture(texture);
@@ -276,7 +287,7 @@ GdObj SpxSceneMgr::create_static_sprite(GdString texture_path, GdVec2 pos, GdFlo
 	static_body->add_child(sprite);
 	sprite->set_position(spx_to_godot_vec2(pivot));
 
-	// Create collision shape (default: rectangle matching texture size)
+	// 碰撞形状作为 Body 子节点；Shape2D 用 Ref 按 Godot 引用计数持有。
 	CollisionShape2D *collision_shape = memnew(CollisionShape2D);
 
 	static_body->set_collider(collision_shape);
@@ -333,12 +344,12 @@ GdObj SpxSceneMgr::create_static_sprite(GdString texture_path, GdVec2 pos, GdFlo
 	}
 
 	static_body->set_scale(Vector2(scale.x, scale.y));
-	// Assign unique ID and register
+	// 分配跨 Go/Godot 的稳定句柄，并登记到排序器可见集合。
 	GdObj id = get_unique_id();
 	static_body->set_sort_id(id);
 	id_pure_sprites[id] = static_body;
 
-	// Add to scene tree
+	// add_child 后节点由 SceneTree 生命周期管理。
 	pure_sprite_root->add_child(static_body);
 
 	return id;
@@ -349,6 +360,7 @@ void SpxSceneMgr::destroy_all_sprites() {
 }
 
 void SpxSceneMgr::change_scene_to_file(GdString path) {
+	// Godot 规则：change/reload/unload 是 SceneTree 主线程操作，错误码由引擎返回。
 	get_tree()->change_scene_to_file(SpxStr(path));
 }
 

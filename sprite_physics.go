@@ -28,15 +28,17 @@ import (
 
 const minCircleRadius = 0.01
 
+// PhysicsMode 表示精灵参与 Godot 物理模拟的方式。
 type PhysicsMode = int64
 
 const (
-	NoPhysics        PhysicsMode = 0 // Pure visual, no collision, best performance (current default) eg: decorators
-	KinematicPhysics PhysicsMode = 1 // Code-controlled movement with collision detection eg: player
-	DynamicPhysics   PhysicsMode = 2 // Affected by physics, automatic gravity and collision eg: items
-	StaticPhysics    PhysicsMode = 3 // Static immovable, but has collision, affects other objects : eg: walls
+	NoPhysics        PhysicsMode = 0 // 仅视觉显示，不参与物理解算（默认）。
+	KinematicPhysics PhysicsMode = 1 // 由代码控制移动，同时进行碰撞检测。
+	DynamicPhysics   PhysicsMode = 2 // 受重力、冲量和碰撞影响自动运动。
+	StaticPhysics    PhysicsMode = 3 // 静止不动但参与碰撞，例如墙壁。
 )
 
+// ColliderShapeType 表示碰撞体或触发器的几何类型。
 type ColliderShapeType = int64
 
 const (
@@ -47,13 +49,13 @@ const (
 	TriggerExtraPixel float64           = 2.0
 )
 
-// physicConfig common structure for physics configuration.
+// physicConfig 保存一组碰撞体或触发器配置。
 type physicConfig struct {
-	Mask   int64             // collision/trigger mask
-	Layer  int64             // collision/trigger layer
-	Type   ColliderShapeType // collider/trigger type
-	Pivot  mathf.Vec2        // pivot position
-	Params []float64         // shape parameters
+	Mask   int64             // 需要检测的碰撞层掩码。
+	Layer  int64             // 当前形状所属碰撞层。
+	Type   ColliderShapeType // 碰撞体或触发器类型。
+	Pivot  mathf.Vec2        // 形状中心相对精灵逻辑原点的偏移。
+	Params []float64         // 矩形[宽,高]、圆[半径]、胶囊[半径,高]或多边形顶点。
 }
 
 // -----------------------------------------------------------------------------

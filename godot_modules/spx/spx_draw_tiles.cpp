@@ -121,6 +121,8 @@ void LayerRenderer::draw(Node2D *parent_node, const DrawContext &ctx) {
 	_draw_preview_texture(parent_node, ctx, hover_pos);
 }
 
+// 直接调用方：Godot ClassDB 注册阶段；顶层调用方：引擎模块类型初始化。
+// Godot 规则：需要从脚本/反射调用的方法必须在这里绑定，普通 C++ 直调不依赖绑定。
 void SpxDrawTiles::_bind_methods() {
 	ClassDB::bind_method(D_METHOD("set_layer_index", "index"), &SpxDrawTiles::set_layer_index);
 	ClassDB::bind_method(D_METHOD("set_texture", "texture", "with_collision"), &SpxDrawTiles::set_texture);
@@ -134,6 +136,7 @@ void SpxDrawTiles::_bind_methods() {
 }
 
 void SpxDrawTiles::_notification(int p_what) {
+	// Godot 通过统一 notification 分发节点生命周期；不要主动调用本入口。
 	if (p_what == NOTIFICATION_READY) {
 		_ready();
 	}
@@ -148,6 +151,7 @@ void SpxDrawTiles::_notification(int p_what) {
 }
 
 void SpxDrawTiles::_ready() {
+	// 直接调用方：NOTIFICATION_READY；顶层调用方：节点首次进入 SceneTree。
 	set_process(true);
 	set_process_input(true);
 	set_z_index(1000);
@@ -179,6 +183,8 @@ void SpxDrawTiles::set_tile_size(int size) {
 }
 
 void SpxDrawTiles::_draw() {
+	// 直接调用方：NOTIFICATION_DRAW；顶层调用方：queue_redraw 或 CanvasItem 首次绘制。
+	// Godot 规则：draw_* 只能在当前 CanvasItem 的绘制通知期间提交。
 	if (exit_editor) {
 		return;
 	}
@@ -204,6 +210,7 @@ void SpxDrawTiles::_draw() {
 }
 
 void SpxDrawTiles::input(const Ref<InputEvent> &p_event) {
+	// 直接调用方：Godot Viewport 输入传播；顶层调用方：键盘/鼠标平台事件。
 	Ref<InputEventKey> key = p_event;
 	if (!key.is_valid()) {
 		return;
@@ -258,7 +265,7 @@ void SpxDrawTiles::input(const Ref<InputEvent> &p_event) {
 	}
 }
 
-// spx interface
+// SPX ABI 接口。直接调用方：SpxTilemapMgr；顶层调用方：Go Tilemap API。
 void SpxDrawTiles::set_layer_index_spx(GdInt index) {
 	axis_flipped = true;
 	set_layer_index(index);
@@ -406,7 +413,7 @@ Vector2 SpxDrawTiles::get_layer_offset_spx(int layer_index) {
 }
 
 void SpxDrawTiles::set_texture(Ref<Texture2D> texture, bool with_collision) {
-	// Use the collision points version for consistency
+	// 统一转到碰撞点集版本，避免两套 source 创建路径产生差异。
 	const Vector<Vector2> *collision_points = with_collision ? &default_collision_rect : &no_collision_array;
 	set_texture_with_collision_points(texture, collision_points);
 }
@@ -523,6 +530,7 @@ TileMapLayer *SpxDrawTiles::_get_layer(int layer_index) {
 }
 
 TileMapLayer *SpxDrawTiles::_create_layer(int layer_index) {
+	// memnew 创建的 Node 在 add_child 后由 SceneTree 管理；销毁时必须 queue_free。
 	TileMapLayer *layer = memnew(TileMapLayer);
 	layer->set_tile_set(shared_tile_set);
 	layer->set_name(UNIQUE_LAYER_PREFIX + itos(layer_index));
@@ -536,7 +544,7 @@ TileMapLayer *SpxDrawTiles::_create_layer(int layer_index) {
 }
 
 int SpxDrawTiles::_get_or_create_source_id(Ref<Texture2D> scaled_texture, bool with_collision) {
-	// Use the collision points version for consistency
+	// 统一转到碰撞点集版本，避免两套 source 创建路径产生差异。
 	const Vector<Vector2> *collision_points = with_collision ? &default_collision_rect : &no_collision_array;
 	return _get_or_create_source_id_with_collision(scaled_texture, collision_points);
 }
@@ -565,6 +573,8 @@ int SpxDrawTiles::_get_or_create_source_id_with_collision(Ref<Texture2D> scaled_
 		shared_tile_set->set_physics_layer_collision_mask(0, 0xFFFF);
 	}
 
+	// Godot 的 TileSet 通过 source_id 管理 atlas；add_source 后会持有该 RefCounted 资源，
+	// 本地 Ref 离开作用域不会销毁它。缓存保证相同纹理复用同一 source。
 	Ref<TileSetAtlasSource> atlas_source;
 	atlas_source.instantiate();
 	atlas_source->set_texture(scaled_texture);
@@ -580,6 +590,7 @@ int SpxDrawTiles::_get_or_create_source_id_with_collision(Ref<Texture2D> scaled_
 
 bool SpxDrawTiles::_create_tile(Ref<TileSetAtlasSource> atlas_source, const Vector2i &tile_coords, const Vector<Vector2> *collision_points) {
 	atlas_source->create_tile(tile_coords);
+	// TileData* 归 atlas source 所有，只在当前 tile/source 存活期间借用，不能 delete。
 	auto tile_data = atlas_source->get_tile_data(tile_coords, 0);
 	if (!tile_data) {
 		return false;
@@ -606,8 +617,8 @@ Ref<ImageTexture> SpxDrawTiles::_get_or_create_scaled_texture(Ref<Texture2D> tex
 	}
 
 	Ref<Image> img = texture->get_image();
-	// Forced scaling will cause image rendering distortion
-	//img->resize(default_cell_size.x, default_cell_size.y, Image::INTERPOLATE_LANCZOS);
+	// 不强制缩放像素数据，避免插值导致素材失真；格尺寸只影响 TileSet 划分。
+	// img->resize(default_cell_size.x, default_cell_size.y, Image::INTERPOLATE_LANCZOS);
 
 	Ref<ImageTexture> scaled_tex = SpxImageTexture::create_from_image(img);
 	texture_scaled_cache_map[texture] = scaled_tex;
@@ -637,6 +648,7 @@ String SpxDrawTiles::_get_tile_texture_path(TileMapLayer *layer, const Vector2i 
 }
 
 void SpxDrawTiles::_destroy_layers() {
+	// 直接调用方：clear_all_layers；Godot 要求 SceneTree 中的 Node 使用 queue_free。
 	for (int i = get_child_count() - 1; i >= 0; i--) {
 		Node *child = get_child(i);
 		TileMapLayer *layer = Object::cast_to<TileMapLayer>(child);

@@ -31,19 +31,22 @@ import (
 // ============================================================================
 // Physics Component
 // ============================================================================
-// This component manages sprite physics state, collision, and trigger shapes.
-
-// physicsComponent encapsulates all physics-related functionality.
+// physicsComponent 保存精灵物理模式、碰撞体/触发器配置和当前触碰目标。
+// 实际解算由 Godot 完成；本组件负责配置代理并提供 SPX API。
 type physicsComponent struct {
+	// sprite 是所属业务精灵，用于取得代理 ID 和游戏级物理设置。
 	sprite *SpriteImpl
 
+	// triggerInfo 与 collisionInfo 分别控制 Area/Body 的形状、层和掩码。
 	triggerInfo   physicConfig
 	collisionInfo physicConfig
 
+	// gravity 是项目倍率；autoShapesDirty 表示服装变化后需要重建自动形状。
 	physicsMode     PhysicsMode
 	gravity         float64
 	autoShapesDirty bool
 
+	// collisionTargets 记录脚本显式配置的碰撞目标集合。
 	collisionTargets map[string]bool
 }
 
@@ -273,7 +276,9 @@ func (p *physicsComponent) initCollisionParams() {
 	}
 }
 
-// applyPhysicsProxyConfig applies initial physics configuration to the engine sprite proxy.
+// applyPhysicsProxyConfig 在 SpxSprite 代理创建后提交初始物理配置：先根据项目设置
+// 计算碰撞/触发层与掩码，再同步形状、重力缩放和刚体模式。这里写的是 Godot 节点
+// 的初始状态；后续物理模拟产生的位置会在每帧由 pullPhysicsPositions 回读。
 func (p *physicsComponent) applyPhysicsProxyConfig(syncProxy *engine.Sprite) {
 	p.initCollisionParams()
 	p.collisionInfo.syncToProxy(syncProxy, false, p.sprite)

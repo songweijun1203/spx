@@ -105,6 +105,7 @@ func (t *transformComponent) cloneFor(newSprite *SpriteImpl) *transformComponent
 
 // markDirty publishes a transform change to the sprite proxy.
 func (t *transformComponent) markDirty() {
+	// 组件不再维护重复的 isDirty；SpriteImpl 的版本计数是唯一同步依据。
 	t.sprite.markProxyDirty()
 }
 

@@ -114,6 +114,7 @@ func (p *penComponent) penDown() {
 }
 
 func (p *penComponent) stamp() {
+	// 盖章直接复用当前已同步的 Godot 精灵代理，确保服装、变换和可见状态与渲染一致。
 	if p.sprite.isDestroyed() || p.sprite.runtimeState.SyncSprite == nil {
 		return
 	}

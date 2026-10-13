@@ -59,6 +59,11 @@ type SystemSettings struct {
 	GlobalAirDrag           float64
 }
 
+// LoadBuilderProject 解析一份构建器项目的顶层配置。
+//
+// gameConf 非 nil 时可指定自定义 Index；正常游戏启动传 nil，因此默认读取 index.json，
+// 再使用项目中的 run 配置作为运行参数。项目资源路径会先归一化，随后字体目录被扫描、
+// 字体文件存在性和 fontPreferences 被校验，全部成功后才返回给 loadGame。
 func LoadBuilderProject(fs spxfs.Dir, gameConf *Config) (LoadedBuilderProject, error) {
 	var loaded LoadedBuilderProject
 	var index any

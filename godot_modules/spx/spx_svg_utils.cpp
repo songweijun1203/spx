@@ -47,9 +47,10 @@
 
 namespace {
 
+// 进程级注册表内部保存的一张规范化字体面。
 struct StoredSVGFontFace {
-	String family;
-	Vector<uint8_t> data;
+	String family; // 已按 ASCII 小写折叠的 family 键。
+	Vector<uint8_t> data; // 写时复制的完整字体字节。
 };
 
 static String _ascii_fold_font_family(const String &family) {
@@ -63,15 +64,18 @@ static String _ascii_fold_font_family(const String &family) {
 	return folded;
 }
 
+// 某一时刻的不可变字体注册快照，由渲染线程整批安装。
 struct FontRegistrySnapshot {
-	Vector<uint8_t> default_font_data;
-	Vector<StoredSVGFontFace> named_font_faces;
-	Vector<String> font_preferences;
-	bool font_preferences_configured = false;
-	uint64_t serial = 0;
-	uint64_t generation = 0;
+	Vector<uint8_t> default_font_data; // 默认字体字节快照。
+	Vector<StoredSVGFontFace> named_font_faces; // 命名字体面快照。
+	Vector<String> font_preferences; // CSS family fallback 顺序。
+	bool font_preferences_configured = false; // 区分“未配置”与“显式空列表”。
+	uint64_t serial = 0; // 任意配置变化均递增，用于线程判断是否需要重装。
+	uint64_t generation = 0; // reset/整批替换时递增，用于决定是否先清线程缓存。
 };
 
+// 进程级线程安全字体注册表；直接由 SpxSvgUtils 静态接口访问，顶层来自项目字体提交
+// 与 SVG 栅格化；写入由 Godot 主线程发起，渲染线程只获取完整快照。
 class FontRegistry {
 public:
 	void replace_all(const Vector<uint8_t> &p_default_font_data, const Vector<SpxSvgProjectFontFace> &p_named_font_faces, const Vector<String> &p_preferences) {
@@ -140,13 +144,13 @@ public:
 	}
 
 private:
-	Mutex m_mutex;
-	Vector<uint8_t> m_default_font_data;
-	HashMap<String, Vector<uint8_t>> m_named_font_faces;
-	Vector<String> m_font_preferences;
-	bool m_font_preferences_configured = false;
-	uint64_t m_serial = 0;
-	uint64_t m_generation = 0;
+	Mutex m_mutex; // 保护以下所有进程级状态和快照复制。
+	Vector<uint8_t> m_default_font_data; // 当前默认字体字节。
+	HashMap<String, Vector<uint8_t>> m_named_font_faces; // 规范化 family 到字体字节。
+	Vector<String> m_font_preferences; // 当前 fallback 偏好顺序。
+	bool m_font_preferences_configured = false; // 是否曾显式配置偏好。
+	uint64_t m_serial = 0; // 每次内容变化递增。
+	uint64_t m_generation = 0; // reset 或完整替换时递增。
 };
 
 static FontRegistry &get_font_registry() {
@@ -192,13 +196,13 @@ static void _destroy_shared_font_bytes(void *p_data) {
 }
 
 static bool _register_font_bytes_for_current_thread(const String &family, const Vector<uint8_t> &font_data) {
+	// LunaSVG/Plutovg 的字体管理器是线程局部状态，字体字节由共享快照保持存活。
 	if (font_data.is_empty()) {
 		return false;
 	}
 
-	// Godot Vector is copy-on-write. Retaining a Vector here gives the
-	// thread-local LunaSVG face immutable ownership without copying the complete
-	// font once per rendering thread.
+	// Godot Vector 使用写时复制；在此保留 Vector，可让线程局部 LunaSVG 字体面拥有
+	// 不可变字节，而无需为每个渲染线程完整复制一遍字体。
 	Vector<uint8_t> *shared_font_data = memnew(Vector<uint8_t>);
 	*shared_font_data = font_data;
 
@@ -227,9 +231,7 @@ static void _apply_font_preferences_to_current_thread(const FontRegistrySnapshot
 	const char *const empty_preference = nullptr;
 	const char *const *preference_data = nullptr;
 	if (snapshot.font_preferences_configured) {
-		// LunaSVG uses nullptr to mean that no project preference was supplied.
-		// Keep an explicit empty preference list distinct by passing a non-null
-		// sentinel with a zero count.
+		// LunaSVG 用 nullptr 表示项目未提供偏好；显式空偏好则传非空哨兵和零数量，以区分两者。
 		preference_data = preference_names.is_empty() ? &empty_preference : preference_names.ptr();
 	}
 	lunasvg_set_font_preferences(
@@ -239,8 +241,7 @@ static void _apply_font_preferences_to_current_thread(const FontRegistrySnapshot
 
 static bool _apply_font_registry_snapshot_to_current_thread(const FontRegistrySnapshot &snapshot, uint64_t &r_applied_generation) {
 	if (r_applied_generation != snapshot.generation) {
-		// A new generation starts at reset. Every rendering thread clears its
-		// local cache before applying the first snapshot for the new project.
+		// reset 开始新字体代；每个渲染线程应用新项目首个快照前先清空本地缓存。
 		lunasvg_clear_font_faces();
 		r_applied_generation = snapshot.generation;
 	}
@@ -251,8 +252,7 @@ static bool _apply_font_registry_snapshot_to_current_thread(const FontRegistrySn
 	}
 	for (int i = 0; i < snapshot.named_font_faces.size(); i++) {
 		if (!_register_font_bytes_for_current_thread(snapshot.named_font_faces[i].family, snapshot.named_font_faces[i].data)) {
-			// Do not render or mark the serial as applied with a partial font set.
-			// The next load retries the complete immutable snapshot.
+			// 字体集不完整时不渲染、也不标记该代已应用；下次加载重试完整不可变快照。
 			lunasvg_clear_font_faces();
 			return false;
 		}
@@ -288,6 +288,8 @@ bool SpxSvgUtils::is_font_data_valid(const Vector<uint8_t> &font_data) {
 }
 
 void SpxSvgUtils::apply_font_registry(const Vector<uint8_t> &default_font_data, const Vector<SpxSvgProjectFontFace> &named_font_faces, const Vector<String> &preferences) {
+	// 直接调用方：SpxResMgr 字体事务提交；顶层来自 Go 项目字体初始化。
+	// 在锁内一次替换完整快照并递增代号，各渲染线程下次使用时整代安装。
 	get_font_registry().replace_all(default_font_data, named_font_faces, preferences);
 }
 
@@ -322,8 +324,9 @@ void SpxSvgUtils::reset_font_registry() {
 }
 
 bool SpxSvgUtils::ensure_font_faces_registered() {
-	thread_local uint64_t applied_serial = 0;
-	thread_local uint64_t applied_generation = 0;
+	// 直接调用方：SVG 栅格化入口；每个渲染线程比较 generation，避免重复注册同一代字体。
+	thread_local uint64_t applied_serial = 0; // 当前线程最后成功安装的内容序号。
+	thread_local uint64_t applied_generation = 0; // 当前线程已清理并安装的项目代号。
 	_install_grapheme_break_callback_for_current_thread();
 
 	FontRegistrySnapshot snapshot;

@@ -28,6 +28,14 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+/*
+ * Godot 音频播放位置 Worklet 的 SPX 覆盖版本，由 SCsub 替换上游同名文件。
+ * 直接调用方：library_godot_audio.js 创建的 position-reporting AudioWorkletNode；
+ * 顶层来源：Godot 音频播放位置/结束状态查询。更新 Godot 时需核对消息协议。
+ * process() 运行在实时音频线程，不能访问 DOM 或执行阻塞工作；位置通过 MessagePort
+ * 限频发送到主线程，返回 false 表示按 AudioWorklet 规则永久停止该处理器。
+ */
+
 const POST_THRESHOLD_S = 0.1;
 
 class GodotPositionReportingProcessor extends AudioWorkletProcessor {

@@ -17,18 +17,21 @@ import (
 	"syscall/js"
 )
 
-// Pre-cached JS string values for zero-allocation event dispatch.
-// js.Value.Equal uses JavaScript's === operator which is a fast reference
-// comparison for interned strings, avoiding Go heap allocation.
+// 预先缓存 JavaScript 事件名，分发时无需反复创建 Go 字符串。
+// js.Value.Equal 使用 JavaScript 的 === 比较已驻留字符串，可避免 Go 堆分配。
 var (
 {{ range $i, $f := $view.CollectGDExtensionICallbackFunctions -}}
 	jsEvent{{ trimPrefix $f.Name "GDExtensionSpxCallback" }} = js.ValueOf("{{ trimPrefix $f.Name "GDExtensionSpxCallback" }}")
 {{ end -}}
 )
 
-// gdspxDispatch is the single dispatch entry point for all callbacks from JS.
-// The first argument (args[0]) is the event name string, followed by event-specific arguments.
-// Uses js.Value.Equal for zero-allocation comparison (no Go string created).
+// gdspxDispatch 是 Web 平台所有 Godot -> Go 事件的统一分发入口。
+//
+// 调用时机：Godot 产生引擎、精灵、输入、物理或 UI 事件时。
+// 直接上级：library_godot_gdspx.js 通过 FFI.gdspx_dispatch 调用。
+// 最顶层来源：Godot 主循环、输入系统、物理系统或节点信号。
+// 跨模块去向：根据 args[0] 的事件名调用 webffi.BindCallback() 保存的 callbacks.OnXxx。
+// js.Value.Equal 直接比较 JavaScript 值，避免为事件名创建 Go 字符串。
 func gdspxDispatch(this js.Value, args []js.Value) any {
 	if len(args) == 0 {
 		return nil

@@ -42,6 +42,8 @@ GdObj SpxPen::get_id() {
 	return id;
 }
 
+// 直接调用方：SpxPenMgr::create_pen() 经 SpxObjectMgr::_create_object()。
+// 顶层调用方：Go 创建 Pen -> engine.PenMgr.CreatePen -> spx_pen_create_pen。
 void SpxPen::on_create(GdInt p_id, Node *p_root) {
 	id = p_id;
 	surface = static_cast<SpxPenSurface *>(p_root);
@@ -61,6 +63,8 @@ void SpxPen::on_destroy() {
 	move_by_mouse = false;
 }
 
+// 把一个逻辑线段排入共享画布；真正的 RenderingServer 提交发生在帧末 flush。
+// 直接调用方：_append_current_point_if_needed；顶层调用方：Go MoveTo 或鼠标跟随画笔更新。
 void SpxPen::_draw_line(GdVec2 from, GdVec2 to, float size, Color color, bool draw_start_cap) {
 	if (surface != nullptr) {
 		surface->draw_line(from, to, size, color, draw_start_cap);
@@ -105,7 +109,7 @@ void SpxPen::_append_current_point_if_needed(GdVec2 position) {
 
 Color SpxPen::_get_current_color() const {
 	Color final_color = pen_properties.color;
-	// Apply saturation and brightness
+	// 在基础颜色上应用 SPX 饱和度和明度倍率。
 	float h = final_color.get_h();
 	float s = final_color.get_s();
 	float v = final_color.get_v();
@@ -121,6 +125,8 @@ void SpxPen::on_update(float delta) {
 	}
 }
 
+// 直接调用方：SpxPenMgr::on_reset -> SpxObjectMgr::_reset_objects。
+// 顶层调用方：Go RequestReset -> SpxEngine::on_reset -> Manager 生命周期。
 void SpxPen::on_reset(int reset_code) {
 	has_last_draw_pos = false;
 	needs_start_cap = true;
@@ -143,6 +149,8 @@ void SpxPen::_stamp_texture(const Ref<Texture2D> &texture, GdVec2 position, GdFl
 	}
 }
 
+// 直接调用方：set_stamp_texture/stamp_with_transform；顶层调用方：Go Stamp API。
+// 资源规则：Ref<Texture2D> 由 Godot 引用计数管理，缓存引用可安全跨帧持有。
 Ref<Texture2D> SpxPen::_resolve_stamp_texture(const String &texture_path) {
 	if (stamp_texture.is_valid() && stamp_texture_path == texture_path) {
 		return stamp_texture;
@@ -153,6 +161,7 @@ Ref<Texture2D> SpxPen::_resolve_stamp_texture(const String &texture_path) {
 	return stamp_texture;
 }
 
+// 以下公开操作均由 SpxPenMgr 直接转发；顶层调用方是 Go 侧 Pen 对象方法。
 void SpxPen::stamp() {
 	_stamp_texture(stamp_texture, current_pen_pos, 0.0f, Vector2(1.0f, 1.0f));
 }

@@ -34,19 +34,27 @@
 #include "gdextension_spx_ext.h"
 #include "spx_manager.h"
 
+// SPX 平台适配服务，屏蔽桌面/Web/macOS 在窗口尺寸、拉伸、持久化目录和
+// 引擎全局参数上的差异。直接调用方是生成的 platform ABI 和 SpxResMgr；
+// 顶层调用方为 Go PlatformMgr、项目启动配置、调试/帧率/存档相关 API。
+// Window、DisplayServer、Engine 都是 Godot 全局或场景对象，除 is_main_thread
+// 这类纯查询外，调用方必须把操作调度到 Godot 主线程。
 class SpxPlatformMgr : public SpxManager {
+	// 当前持久化根目录。默认取 Godot user:// 对应的真实目录，可被宿主覆盖。
 	String persistent_data_dir = "res://";
+	// 当前窗口尺寸是否按逻辑内容尺寸解释；macOS HiDPI 读写时据此缩放。
 	bool window_size_uses_content_scale = false;
 
 public:
-
+	// 直接调用方：SpxEngine 生命周期分发；顶层来源：Godot 启动或 Go reset。
 	void on_awake() override;
 	void on_reset(int reset_code) override;
 	void _set_persistent_data_dir(String path);
 	String _get_persistent_data_dir();
 
 public:
-	// Stretching preserves the content aspect ratio on every platform.
+	// 开关 Godot 内容缩放并保持宽高比。直接调用方：ABI；顶层为 Go 项目窗口配置。
+	// Godot 规则：content_scale_mode/aspect 属于 Window，必须在主线程更新。
 	SPX_BIND void set_stretch(GdBool enabled, GdInt content_width, GdInt content_height);
 
 	SPX_BIND void set_window_position(GdVec2 pos);

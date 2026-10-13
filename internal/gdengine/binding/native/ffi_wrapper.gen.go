@@ -430,7 +430,9 @@ type GDExtensionSpxUiSetRotation C.GDExtensionSpxUiSetRotation
 type GDExtensionSpxUiGetFlip C.GDExtensionSpxUiGetFlip
 type GDExtensionSpxUiSetFlip C.GDExtensionSpxUiSetFlip
 
-// call gdextension interface functions
+// 以下 CallXxx 函数仅供 Native Manager 调用。
+// 直接上级：manager_native.gen.go 中对应的 Manager 方法。
+// 它们从 api 取出 gdspx_init() 已解析的 C 函数指针，通过 cgo 进入 godot_modules。
 func CallAudioStopAll() {
 	arg0 := (C.GDExtensionSpxAudioStopAll)(api.SpxAudioStopAll)
 

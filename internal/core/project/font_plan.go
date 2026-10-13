@@ -18,9 +18,8 @@ package project
 
 import "slices"
 
-// defaultDisplayFontPath selects SPX's small bundled Latin font. Keeping
-// this separate from project font paths makes the reserved default family
-// independent of project-provided CJK fonts.
+// defaultDisplayFontPath 是 SPX 自带的基础字体。它与项目字体分开，使保留的
+// default 字体族不依赖项目是否提供中文或其他字体。
 const defaultDisplayFontPath = "res://engine/fonts/default.ttf"
 
 type RuntimeFontFace struct {
@@ -28,8 +27,7 @@ type RuntimeFontFace struct {
 	Family string
 }
 
-// RuntimeFontPlan is the complete project font configuration after asset
-// paths have been resolved, but before it is flattened for an engine ABI.
+// RuntimeFontPlan 是资源路径已经转换、但尚未摊平成跨语言数组的完整字体应用计划。
 type RuntimeFontPlan struct {
 	DefaultPath string
 	Faces       []RuntimeFontFace
@@ -42,6 +40,8 @@ func (p RuntimeFontPlan) Clone() RuntimeFontPlan {
 	return p
 }
 
+// ResolveRuntimeFontPlan 把已校验的项目字体目录转换为 Godot 可加载的资源路径，
+// 同时保留字体族名和回退优先级。真正修改 Godot Theme 的动作由 ResMgr 完成。
 func ResolveRuntimeFontPlan(fonts ProjectFonts, resolvePath func(string) string) RuntimeFontPlan {
 	faceCount := 0
 	for _, family := range fonts.Families {

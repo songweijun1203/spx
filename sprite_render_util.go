@@ -24,6 +24,7 @@ import (
 )
 
 func getRenderOffset(p *SpriteImpl) (float64, float64) {
+	// 轴心偏移属于视觉层，不改变 SpriteImpl 的逻辑坐标。
 	return getCostumeRenderOffset(p.currentCostume(), p.getPivot(), p.runtimeState.Scale, p.runtimeState.Scale)
 }
 
@@ -33,13 +34,14 @@ func getCostumeRenderOffset(c *costume, pivot mathf.Vec2, scaleX, scaleY float64
 }
 
 func applyRenderOffset(p *SpriteImpl, cx, cy *float64) {
+	// 只有在计算世界包围盒等视觉相关数据时，才把视觉偏移折算进世界坐标。
 	x, y := getWorldRenderOffset(p)
 	*cx += x
 	*cy += y
 }
 
-// getWorldRenderOffset applies the sprite root's flip and rotation to the
-// local render offset. Godot performs the same transform through RenderRoot.
+// getWorldRenderOffset 将精灵根节点的翻转和旋转应用到局部视觉偏移。
+// Godot 侧通过 RenderRoot 的父子变换完成同样的计算。
 func getWorldRenderOffset(p *SpriteImpl) (float64, float64) {
 	x, y := getRenderOffset(p)
 	rotation, scaleX, scaleY := getRenderRotationAndScale(p)

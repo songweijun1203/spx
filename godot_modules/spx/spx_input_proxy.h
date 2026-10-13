@@ -34,13 +34,20 @@
 #include "gdextension_spx_ext.h"
 #include "scene/main/node.h"
 
+// 挂在 SPX 场景树中的输入事件代理，将 Godot InputEvent 转成稳定 ABI 回调交给 Go。
+// 直接调用方：Godot Viewport 的输入传播（input override）；创建方为 SpxInputMgr。
+// 顶层来源：操作系统/浏览器键鼠事件；最终消费者是 Go runtime 的事件循环。
+// Godot 规则：Node 只有进入 SceneTree 并启用 process_input 后才接收 input；事件按
+// Viewport 输入传播顺序到达，回调运行在主线程，不能在此阻塞或修改 Go 调度状态。
 class SpxInputProxy : public Node {
 	GDCLASS(SpxInputProxy, Node);
 
 public:
+	// 直接调用方：SpxInputMgr::on_start；用于在 add_child 后显式启用输入处理。
 	void ready();
 
 protected:
+	// Godot 引擎回调；顶层来源为平台输入队列，经 SPX_CALLBACK 转发到 Go。
 	void input(const Ref<InputEvent> &p_event) override;
 };
 

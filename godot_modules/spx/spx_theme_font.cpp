@@ -33,6 +33,7 @@
 #include "scene/theme/theme_db.h"
 
 void spx_get_theme_fonts(Ref<Font> &r_default_font, Ref<Font> &r_fallback_font) {
+	// 直接调用方：SpxResMgr::on_awake；保存 ThemeDB 当前 Ref，供游戏 reset 恢复。
 	ThemeDB *theme_db = ThemeDB::get_singleton();
 	if (theme_db == nullptr) {
 		r_default_font.unref();
@@ -57,5 +58,7 @@ void spx_set_theme_fonts(const Ref<Font> &p_default_font, const Ref<Font> &p_fal
 }
 
 void spx_set_project_theme_font(const Ref<Font> &p_font) {
+	// 直接调用方：SpxResMgr 字体提交；顶层来自 Go 项目字体计划。
+	// ThemeDB 是进程级单例，调用者负责确保位于 Godot 主线程。
 	spx_set_theme_fonts(p_font, p_font);
 }

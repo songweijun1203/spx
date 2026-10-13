@@ -38,12 +38,14 @@
 #include "spx_engine.h"
 
 void SpxInputMgr::on_start() {
+	// 直接调用方：SpxEngine::_notify_managers(on_start)；顶层为 Godot/SPX 启动或重跑。
 	if (input_proxy && !input_proxy->is_queued_for_deletion()) {
 		return;
 	}
 	input_proxy = memnew(SpxInputProxy);
 	input_proxy->set_name("input_proxy");
 	get_spx_root()->add_child(input_proxy);
+	// SpxInputProxy 没有脚本 _ready 绑定，add_child 后由 Manager 显式启用输入处理。
 	input_proxy->ready();
 }
 
@@ -53,6 +55,8 @@ void SpxInputMgr::on_destroy() {
 
 void SpxInputMgr::on_reset(int reset_code) {
 	if (input_proxy) {
+		// Godot 规则：queue_free 在当前帧安全点删除 Node；先置空 Manager 引用，
+		// 避免 reset 后继续向等待删除的代理派发业务操作。
 		input_proxy->queue_free();
 		input_proxy = nullptr;
 	}
@@ -60,7 +64,7 @@ void SpxInputMgr::on_reset(int reset_code) {
 	action_ids.clear();
 }
 
-// input
+// 直接调用方：生成的输入 ABI；顶层为 Go runtime/输入积木的轮询读取。
 GdVec2 SpxInputMgr::get_global_mouse_pos() {
 	auto mouse_pos = cameraMgr->get_global_mouse_position();
 	return godot_to_spx_vec2(mouse_pos);
@@ -101,6 +105,7 @@ GdBool SpxInputMgr::is_action_just_released(GdString action) {
 }
 
 GdInt SpxInputMgr::register_action(GdString action) {
+	// InputMap action 名跨 ABI 传输成本较高，注册后热路径仅传整数 ID。
 	StringName name(SpxStr(action));
 	if (action_ids.has(name)) {
 		return action_ids[name];
@@ -137,6 +142,7 @@ GdBool SpxInputMgr::is_action_just_released_id(GdInt action_id) {
 }
 
 void SpxInputMgr::write_snapshot(float out[3]) {
+	// 直接调用方：生成的 ABI；顶层为 Go runtime 每帧输入快照。
 	if (!out) {
 		return;
 	}
@@ -146,8 +152,7 @@ void SpxInputMgr::write_snapshot(float out[3]) {
 	Input *input = Input::get_singleton();
 	for (int i = (int)MouseButton::LEFT; i <= (int)MouseButton::MIDDLE; i++) {
 		if (input->is_mouse_button_pressed((MouseButton)i)) {
-			// Compact the hot-path snapshot to zero-based button lanes:
-			// bit 0 = left, bit 1 = right, bit 2 = middle.
+			// 热路径压成从零开始的按钮位：bit0 左键、bit1 右键、bit2 中键。
 			mouse_bits |= 1u << (i - (int)MouseButton::LEFT);
 		}
 	}

@@ -64,7 +64,7 @@
 
 StringName SpxSpriteMgr::default_texture_anim;
 
-// Checked main-thread lookup with each API's existing default return value.
+// 在主线程校验后查找节点；各 API 继续沿用原有的默认返回值。
 #define SPX_REQUIRE_SPRITE_VOID() \
 	SPX_SPRITE_LOOKUP_VOID(obj, __func__)
 
@@ -121,9 +121,11 @@ bool check_pixel_collision(SpxSprite *p_a, SpxSprite *p_b, GdFloat p_alpha_thres
 } // namespace
 
 void SpxSpriteMgr::on_awake() {
+	// 直接调用方：SpxEngine Manager 生命周期；顶层由 Godot 引擎启动触发。
+	// 这里只缓存场景树借用指针，Node 的所有权仍属于其父节点。
 	default_texture_anim = "default";
 
-	// Initialize pixel collision sampling step with default value of 2 (good balance between performance and accuracy)
+	// 像素碰撞默认隔 2 像素采样，在性能与精度间取平衡。
 	pixel_collision_sampling_step = 2;
 
 	dont_destroy_root = memnew(Node2D);
@@ -136,6 +138,8 @@ void SpxSpriteMgr::on_awake() {
 }
 
 void SpxSpriteMgr::on_start() {
+	// 场景启动时接管已经存在的 SpxSprite：分配稳定的 Go/Godot 对象 ID，
+	// 建立 id_objects 映射，并通知 Go 侧场景精灵已经实例化。
 	auto nodes = get_root()->find_children("*", "SpxSprite", true, false);
 	for (int i = 0; i < nodes.size(); i++) {
 		auto sprite = Object::cast_to<SpxSprite>(nodes[i]);
@@ -165,6 +169,8 @@ void SpxSpriteMgr::on_destroy() {
 }
 
 void SpxSpriteMgr::on_update(float delta) {
+	// 每个空闲帧先把 Area2D 候选复核成像素 enter/exit，再合并精灵与场景装饰物
+	// 交给全局 LayerSorter；Go 侧变换由独立的批量同步入口提交。
 	_check_pixel_collision_events();
 	auto &sorter = SpxLayerSorter::instance();
 	if (!sorter.is_enabled()) {
@@ -178,6 +184,7 @@ void SpxSpriteMgr::on_update(float delta) {
 }
 
 void SpxSpriteMgr::on_reset(int reset_code) {
+	// 直接调用方：SpxEngine reset；顶层来自 Go 重开项目/热重载。
 	default_texture_anim = "default";
 	dont_destroy_root->queue_free();
 	dont_destroy_root = memnew(Node2D);
@@ -198,7 +205,7 @@ void SpxSpriteMgr::collect_sortable_sprites(Vector<ISortableSprite *> &out) {
 SpxSprite *SpxSpriteMgr::get_sprite(GdObj obj) {
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), nullptr, "SPX sprites may only be accessed on the engine main thread.");
 
-	// Use single-lookup pattern: find() returns Element*, avoiding double hash lookup
+	// 使用单次查找：find 返回 Element*，避免重复查询映射。
 	auto element = id_objects.find(obj);
 	if (element == nullptr) {
 		return nullptr;
@@ -212,6 +219,7 @@ SpxSprite *SpxSpriteMgr::get_sprite(GdObj obj) {
 }
 
 void SpxSpriteMgr::_register_sprite(SpxSprite *p_sprite) {
+	// Manager 只登记借用指针；节点 PREDELETE 会回调 on_sprite_destroy 清除索引。
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "SPX sprites may only be registered on the engine main thread.");
 	ERR_FAIL_NULL(p_sprite);
 	id_objects[p_sprite->get_gid()] = p_sprite;
@@ -311,16 +319,14 @@ GdBool SpxSpriteMgr::check_collision_with_point(GdObj obj, GdVec2 point, GdBool 
 	}
 
 	Snapshot query;
-	// Scratch keeps point sensing and click picking distinct:
-	// - click queries respect visibility and ghost alpha
-	// - sensing queries ignore both and use the sprite silhouette directly
+	// Scratch 区分点感知与点击拾取：点击查询遵守可见性和幽灵透明度，
+	// 普通感知忽略二者并直接使用精灵轮廓。
 	if (capture_sprite_pixels(sprite, query, is_click_query, is_click_query) && SpxPixelQuery::load_image(query)) {
 		Color color;
 		return SpxPixelQuery::sample(query, point, color) && color.a > 0.0f;
 	}
 
-	// Keep point-query fallbacks aligned with the trigger footprint used by SPX's
-	// mouse/tap detection, even when the pixel path is unavailable.
+	// 即使像素查询不可用，点查询回退也与 SPX 鼠标/触摸检测使用的触发器轮廓保持一致。
 	return sprite->check_collision_with_point(point, true);
 }
 
@@ -343,11 +349,14 @@ GdInt SpxSpriteMgr::create_sprite(GdString path, GdVec2 pos) {
 }
 
 GdObj SpxSpriteMgr::create_bare_sprite(GdVec2 pos) {
+	// 运行时克隆从 Go 的 BridgeNewBareSprite 经 native/Web ABI 调到这里。
 	return _create_sprite("", pos, false);
 }
 
-// sprite
+// 精灵创建与销毁。
 GdInt SpxSpriteMgr::_create_sprite(GdString path, GdVec2 pos, GdBool is_backdrop) {
+	// 直接调用方：create_sprite/create_backdrop/create_bare_sprite；顶层调用方：Go 游戏加载和克隆初始化。
+	// PackedScene::instantiate 返回的 Node 在 add_child 后归场景树所有，失败路径需自行 memdelete。
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), NULL_OBJECT_ID, "SPX sprites may only be created on the engine main thread.");
 
 	const String path_str = SpxStr(path);
@@ -377,7 +386,7 @@ GdInt SpxSpriteMgr::_create_sprite(GdString path, GdVec2 pos, GdBool is_backdrop
 		body_collision_shape->set_shape(body_shape);
 		sprite->add_child(body_collision_shape);
 	} else {
-		// load from path
+		// 从 PackedScene 路径加载。
 		Ref<PackedScene> scene = ResourceLoader::load(path_str);
 		if (scene.is_null()) {
 			print_error("Failed to load sprite scene " + path_str);
@@ -407,6 +416,7 @@ GdInt SpxSpriteMgr::_create_sprite(GdString path, GdVec2 pos, GdBool is_backdrop
 }
 
 void SpxSpriteMgr::destroy_all_sprites() {
+	// Godot 规则：queue_free 延迟到帧末；先从映射移除可避免同帧后续 Go 调用命中待删节点。
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "SPX sprites may only be destroyed on the engine main thread.");
 
 	sprite_root->queue_free();
@@ -451,6 +461,8 @@ void SpxSpriteMgr::set_position(GdObj obj, GdVec2 pos) {
 }
 
 void SpxSpriteMgr::set_transform(GdObj obj, GdVec2 pos, GdFloat rot, GdVec2 scale, GdBool visible, GdVec2 pivot) {
+	// 单精灵即时路径：用于初始化、查询修正或少量属性变更；正常逐帧更新优先走
+	// batch_update_transforms，以减少 Go <-> Godot 的跨语言调用次数。
 	SPX_REQUIRE_SPRITE_VOID()
 	sprite->set_position(spx_to_godot_vec2(pos));
 	sprite->set_rotation(rot);
@@ -955,13 +967,15 @@ GdBool SpxSpriteMgr::is_trigger_enabled(GdObj obj) {
 }
 
 GdBool SpxSpriteMgr::check_collision_with_sprite(GdObj obj, GdObj obj_b, GdFloat alpha_threshold, GdBool use_pixel_perfect) {
+	// 直接调用方：ABI；顶层调用方：Go Sprite.Touching。先做 Godot 形状检测，
+	// 按需再读取 CPU 图像逐像素确认，以控制高频查询成本。
 	SPX_REQUIRE_SPRITE_RETURN(false)
 	SPX_REQUIRE_TARGET_SPRITE_RETURN(obj_b, false)
 	if (!sprite->is_visible_in_tree() || !sprite_target->is_visible_in_tree()) {
 		return false;
 	}
 
-	// If not using pixel-perfect collision, use simple collider2d collision detection
+	// 未启用像素级检测时，只使用 Collider2D 形状检测。
 	if (!use_pixel_perfect) {
 		return sprite->check_collision(sprite_target, false, false);
 	}
@@ -1046,7 +1060,7 @@ GdBool SpxSpriteMgr::_check_collision(GdObj obj, ColorCheckFunc check_func) {
 	SPX_REQUIRE_SPRITE_RETURN(false) // Ensure sprite exists
 
 	Snapshot query1;
-	// Scratch uses the caller's silhouette/color as the mask even when ghosted or hidden.
+	// Scratch 即使在精灵隐藏或幽灵化时，也用调用者原始轮廓/颜色作为掩码。
 	if (!capture_sprite_pixels(sprite, query1, false, false)) {
 		return false;
 	}
@@ -1054,7 +1068,7 @@ GdBool SpxSpriteMgr::_check_collision(GdObj obj, ColorCheckFunc check_func) {
 		return false;
 	}
 
-	// Iterate through all objects
+	// 遍历其他活跃精灵。
 	for (const auto &item : id_objects) {
 		SpxSprite *sp2 = item.value;
 		if (sprite == sp2 || sp2 == nullptr || sp2->is_queued_for_deletion()) {
@@ -1086,6 +1100,7 @@ GdBool SpxSpriteMgr::_check_collision(GdObj obj, ColorCheckFunc check_func) {
 }
 
 void SpxSpriteMgr::on_trigger_enter(GdInt self_id, GdInt other_id) {
+	// 直接调用方：SpxSprite 的 Area2D 信号回调；候选对先去重，像素事件在 on_update 发出。
 	if (physicsMgr->is_collision_by_pixel) {
 		bounding_collision_pairs.insert(TriggerPair(self_id, other_id));
 	} else {
@@ -1095,8 +1110,7 @@ void SpxSpriteMgr::on_trigger_enter(GdInt self_id, GdInt other_id) {
 void SpxSpriteMgr::on_trigger_exit(GdInt self_id, GdInt other_id) {
 	if (physicsMgr->is_collision_by_pixel) {
 		const TriggerPair pair(self_id, other_id);
-		// Trigger separation ends the broad-phase candidate pair, so pixel collision
-		// tracking must stop immediately instead of waiting for another pixel check.
+		// 触发器分离会终止宽相位候选对，像素碰撞跟踪必须立即结束，不能等待下一次像素复核。
 		bounding_collision_pairs.erase(pair);
 		if (_erase_pixel_collision_pair(pair)) {
 			_notify_pixel_collision_exit(pair);
@@ -1149,6 +1163,8 @@ void SpxSpriteMgr::_remove_collision_pairs_for_sprite(GdObj obj) {
 }
 
 void SpxSpriteMgr::_check_pixel_collision_events() {
+	// 直接调用方：on_update；顶层由 Godot 空闲帧驱动并回调 Go runtime 触碰事件。
+	// 先收集退出/进入列表再发回调，避免回调删除精灵导致正在遍历的集合失效。
 	if (!physicsMgr->is_collision_by_pixel || bounding_collision_pairs.empty()) {
 		return;
 	}

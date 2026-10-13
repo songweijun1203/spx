@@ -33,9 +33,13 @@
 
 #include "core/io/image_loader.h"
 
+// LunaSVG 栅格化适配器：把 SVG 文件/UTF-8 文本转成 Godot Image，并支持主题色替换。
+// 直接调用方是 SpxSvgCache；顶层调用方是 SpxResMgr，再上层是 Go 服装/动画加载。
+// Image 是 RefCounted 资源，调用方持有输出 Ref；本类无实例状态，接口可被渲染工作线程调用。
 class SpxImageLoaderSVG {
-	static HashMap<Color, Color> forced_color_map;
+	static HashMap<Color, Color> forced_color_map; // 进程级默认颜色替换表；设置阶段与读取阶段不得并发修改。
 
+	// 替换 fill/stroke 等 SVG 属性；只改本次解析的字符串副本。
 	static void _replace_color_property(const HashMap<Color, Color> &p_color_map, const String &p_prefix, String &r_string);
 
 public:

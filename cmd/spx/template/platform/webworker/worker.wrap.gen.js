@@ -6,8 +6,13 @@
 //   "worker.js.tmpl" so they can be included in the generated
 //   code.
 //----------------------------------------------------------------------------*/
+// 创建 Godot JS 回调所使用的 FFI 表。
+// 调用来源：go.wasm.loader.js 的 loadGoWasmModule()，在 Go WASM 启动后调用。
+// 返回值保存到 Module['FFI']，供 library_godot_gdspx.js 查找 gdspx_dispatch。
 function BindFFI(goBridge) {
     return {
+        // 取得 Go 通过 syscall/js 注册到当前 Worker self 上的函数包装器。
+        // 这里不创建 Worker，也不调用 C++，只是保存一个 JS 函数引用。
         gdspx_dispatch: goBridge.getGoFunction("gdspx_dispatch")
     }
 }

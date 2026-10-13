@@ -28,6 +28,9 @@ type GDExtensionInterface struct {
 	{{ end -}}
 }
 
+// resolveAPIFunctions 获取 Web 平台所有 gdspx_* JavaScript Manager 函数。
+// 调用时机：Go 游戏执行 webffi.Link() 时。
+// 直接上级：binding/web.Link()；函数对象由 resolveJSFunc() 从 globalThis 查询。
 func (x *GDExtensionInterface) resolveAPIFunctions() {
 	{{ range $i, $f := $view.CollectGDExtensionInterfaceFunctions -}}
 	{{ if eq $f.Name "GDExtensionInterfaceGetProcAddress" -}}{{ continue }}{{ end -}}

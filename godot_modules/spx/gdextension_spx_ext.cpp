@@ -28,6 +28,10 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+// 本文件由 SPX 绑定生成器整体生成，请勿直接修改生成结果。
+// 它为 gdextension_spx_ext.h 中的每个 Manager 函数指针生成 C ABI 转发函数，
+// 再以稳定的 spx_<manager>_<method> 名称注册到 Godot 接口表。
+
 #include "gdextension_spx_ext.h"
 
 #include "core/extension/gdextension.h"
@@ -39,6 +43,7 @@
 #include "spx_engine.h"
 #include "spx_abi.h"
 #include "spx_mgr_access.h"
+// Manager 列表来自扫描到的 Spx*Mgr 类；转发函数需要看到实际方法声明。
 #include "spx_audio_mgr.h"
 #include "spx_camera_mgr.h"
 #include "spx_debug_mgr.h"
@@ -56,7 +61,10 @@
 #include "spx_ui_mgr.h"
 
 
+// Godot/Go 通过字符串名称查找接口函数；注册值是下方生成的 gdextension_* 地址。
 #define REGISTER_SPX_INTERFACE_FUNC(m_name) GDExtension::register_interface_function(#m_name, (GDExtensionInterfaceFunctionPtr)&gdextension_##m_name)
+
+// 不依赖具体 Manager 的全局 ABI：释放 Native 返回字符串，以及安装 Go 回调表。
 static void gdextension_spx_global_free_string(GdString value) {
 	SpxAbi::free_return_cstr(value);
 }
@@ -64,6 +72,9 @@ static void gdextension_spx_global_free_string(GdString value) {
 static void gdextension_spx_global_register_callbacks(GDExtensionSpxCallbackInfoPtr callback_ptr) {
 	SpxEngine::register_callbacks(callback_ptr);
 }
+
+// 为 AST 中的每个 Manager 方法生成薄转发层。实例方法调用对应的 xxxMgr 指针，
+// static SPX_BIND 方法直接调用类静态函数；非 void 结果写入 ABI 的 ret_val 输出参数。
 static void gdextension_spx_audio_stop_all() {
 	audioMgr->stop_all();
 }
@@ -1401,6 +1412,7 @@ static void gdextension_spx_ui_set_flip(GdObj obj, GdBool horizontal, GdBool is_
 }
 
 
+// 模块初始化时发布所有稳定 ABI 名称，Native Go 和 Web 桥接随后按名称取得函数地址。
 void gdextension_spx_setup_interface() {
 	REGISTER_SPX_INTERFACE_FUNC(spx_global_register_callbacks);
 	REGISTER_SPX_INTERFACE_FUNC(spx_global_free_string);

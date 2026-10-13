@@ -129,6 +129,8 @@ func (p *packedConfigDir) projectFontFamilyNames() ([]string, bool) {
 	return names, true
 }
 
+// adaptConfigDir 为 Godot URI 项目增加引擎读取回退，同时保证同一个目录只包装一次。
+// index_pack.json 的内嵌配置由 OpenBuilderResources 在这层适配之后再叠加。
 func adaptConfigDir(fs spxfs.Dir) spxfs.Dir {
 	if _, ok := fs.(adaptedConfigDir); ok {
 		return fs
@@ -145,6 +147,7 @@ func adaptConfigDir(fs spxfs.Dir) spxfs.Dir {
 }
 
 func (p *rawConfigDir) Open(name string) (io.ReadCloser, error) {
+	// 导出环境中的源码 FS 可能缺少配置文件，优先尝试等价的 Godot 资源路径。
 	for _, filePath := range configAssetPaths(p.assetDir, name) {
 		if engine.HasFile(filePath) {
 			return io.NopCloser(strings.NewReader(engine.ReadAllText(filePath))), nil

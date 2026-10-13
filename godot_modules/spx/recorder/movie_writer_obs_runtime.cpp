@@ -14,6 +14,11 @@
 #include "servers/display_server.h"
 #include "servers/rendering_server.h"
 
+// Native 实时录制总实现：Godot 主线程抓取最新 Viewport 画面，视频/音频线程独立定时写盘，
+// 停止后再把两个单流 AVI 合并。这样游戏 update 卡顿不会阻塞音频线程或破坏输出时间轴。
+
+// 从 CORE 阶段注册的 ProjectSettings 生成会话默认配置，并创建后处理器。
+// 直接调用方：initialize_spx_recorder_servers()；顶层调用方：Godot SERVERS 初始化。
 ObsStyleMovieWriter::ObsStyleMovieWriter() :
 		current_state(STATE_UNINITIALIZED),
 		game_frame_sequence(0),
@@ -22,9 +27,11 @@ ObsStyleMovieWriter::ObsStyleMovieWriter() :
 		last_add_frame_time(0),
 		frames_added_count(0) {
 	// Load configuration from project settings
+	// 先加载内置标准配置，再用项目设置逐项覆盖。
 	obs_config = get_standard_config();
 
 	// Apply project settings
+	// ProjectSettings 在 CORE 阶段已注册，此处 SERVERS 阶段只读取。
 	if (ProjectSettings::get_singleton()->has_setting("movie_writer/obs_video_fps")) {
 		obs_config.video_fps = GLOBAL_GET("movie_writer/obs_video_fps");
 	}
@@ -53,9 +60,11 @@ ObsStyleMovieWriter::ObsStyleMovieWriter() :
 		obs_config.ffmpeg_path = GLOBAL_GET("movie_writer/obs_ffmpeg_path");
 	}
 	// Initialize post-merge processor
+	// 后处理器由本 writer 独占，录制组件清理时删除。
 	post_merge_processor = new PostMergeProcessor();
 }
 
+// 析构兜底结束录制，并保证音频效果、worker 和 FileAccess 全部先于 writer 释放。
 ObsStyleMovieWriter::~ObsStyleMovieWriter() {
 	if (current_state == STATE_RECORDING) {
 		write_end();
@@ -64,6 +73,7 @@ ObsStyleMovieWriter::~ObsStyleMovieWriter() {
 	cleanup_components();
 }
 
+// Godot MovieWriter 格式探测入口；直接调用方：MovieWriter 注册中心，顶层调用方：--write-movie。
 bool ObsStyleMovieWriter::handles_file(const String &p_path) const {
 #ifdef WEB_ENABLED
 	return false;
@@ -77,10 +87,16 @@ bool ObsStyleMovieWriter::handles_realtime_file(const String &p_path) const {
 	return p_path.get_extension().to_lower() == "avi";
 }
 
+// SPX 实时启动直接复用 Godot MovieWriter 生命周期。
+// 直接调用方：MovieRecorderManager::_begin()；顶层调用方：Native 主动录制，或
+// cmd/spx 注入 --write-movie 后触发的命令行 movie_begin。
 Error ObsStyleMovieWriter::begin_realtime(const Size2i &p_movie_size, uint32_t p_fps, const String &p_base_path) {
 	return write_begin(p_movie_size, p_fps, p_base_path);
 }
 
+// 在 Godot 主线程读取主窗口 ViewportTexture，并发布给视频双缓冲。
+// 直接调用方：MovieRecorderManager::_movie_frame()；顶层调用方：Godot draw 完成后的主循环回调。
+// Godot 规则：RenderingServer/Viewport 抓图必须在有效主窗口生命周期内执行；HDR 图像先转为 sRGB8。
 void ObsStyleMovieWriter::add_realtime_frame() {
 	if (current_state != STATE_RECORDING) {
 		return;
@@ -96,6 +112,7 @@ void ObsStyleMovieWriter::add_realtime_frame() {
 	write_frame(frame, nullptr);
 }
 
+// 直接调用方：MovieRecorderManager::_finish()；顶层调用方：停止录制或 Godot 退出。
 void ObsStyleMovieWriter::end_realtime() {
 	write_end();
 }
@@ -116,6 +133,10 @@ AudioServer::SpeakerMode ObsStyleMovieWriter::get_audio_speaker_mode() const {
 	return obs_config.audio_channels == 2 ? AudioServer::SPEAKER_MODE_STEREO : AudioServer::SPEAKER_SURROUND_31;
 }
 
+// 建立一场录制会话：校验配置、创建组件、安装 Master Bus 效果，再启动音视频线程。
+// 直接调用方：begin_realtime() 或 Godot MovieWriter 调度；顶层调用方：Native API，或
+// cmd/spx 注入的 --write-movie。
+// 本入口及错误回滚必须在 Godot 主线程运行，因为会修改 AudioServer Bus 和录制状态。
 Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fps, const String &p_base_path) {
 	if (current_state != STATE_UNINITIALIZED) {
 		ERR_PRINT("ObsStyleMovieWriter: Recorder state is incorrect");
@@ -125,6 +146,7 @@ Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fp
 	output_file_path = p_base_path;
 
 	// Update video resolution in config
+	// Godot 传入的实际电影尺寸覆盖会话配置。
 	obs_config.video_width = p_movie_size.width;
 	obs_config.video_height = p_movie_size.height;
 
@@ -137,12 +159,14 @@ Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fp
 	}
 
 	// Validate configuration
+	// 先校验，避免创建部分 FileAccess/线程资源后才发现参数非法。
 	Error config_error = validate_config();
 	if (config_error != OK) {
 		return config_error;
 	}
 
 	// Set up recording components
+	// 打开独立音视频输出并建立双缓冲。
 	Error setup_error = setup_components();
 	if (setup_error != OK) {
 		cleanup_components();
@@ -150,6 +174,7 @@ Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fp
 	}
 
 	// Set up audio capture
+	// 安装 Master Bus AudioEffect，并把音频 recorder 注册为借用消费者。
 	Error audio_error = setup_audio_capture();
 	if (audio_error != OK) {
 		restore_audio_driver();
@@ -157,6 +182,7 @@ Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fp
 		return audio_error;
 	}
 	// Start independent recording threads
+	// 两个 Godot Thread 均成功启动后才进入 STATE_RECORDING。
 	Error video_start_error = video_recorder->start_recording();
 	if (video_start_error != OK) {
 		ERR_PRINT("ObsStyleMovieWriter: Failed to start video recording");
@@ -175,6 +201,7 @@ Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fp
 	}
 
 	// Update state
+	// 状态最后提交，确保 write_frame 不会看到半初始化组件。
 	update_recording_state(STATE_RECORDING);
 	recording_start_time = OS::get_singleton()->get_ticks_usec();
 	game_frame_sequence = 0;
@@ -183,6 +210,8 @@ Error ObsStyleMovieWriter::write_begin(const Size2i &p_movie_size, uint32_t p_fp
 	return OK;
 }
 
+// Godot 主线程逐帧提交入口，只发布最新 Image；PCM 参数在独立音频模式下不使用。
+// 直接调用方：add_realtime_frame() 或 Godot MovieWriter 电影循环；顶层调用方：每个录制帧。
 Error ObsStyleMovieWriter::write_frame(const Ref<Image> &p_image, const int32_t *p_audio_data) {
 	if (current_state != STATE_RECORDING) {
 		return ERR_UNCONFIGURED;
@@ -191,6 +220,7 @@ Error ObsStyleMovieWriter::write_frame(const Ref<Image> &p_image, const int32_t 
 	uint64_t current_time = OS::get_singleton()->get_ticks_usec();
 
 	// Update game frame data to double buffer
+	// 双缓冲只保留最新游戏帧，视频线程按自己的固定 FPS 决定何时消费/重复。
 	if (p_image.is_valid()) {
 		frame_buffer->update_frame(p_image, current_time, game_frame_sequence);
 		game_frame_sequence++;
@@ -201,10 +231,14 @@ Error ObsStyleMovieWriter::write_frame(const Ref<Image> &p_image, const int32_t 
 
 	// Independent recording mode: audio captured by HybridAudioDriver
 	// p_audio_data parameter is not used in independent recording mode
+	// 音频由 Master Bus 效果实时捕获，因此忽略 Godot 离线 MovieWriter 传入的 PCM 指针。
 
 	return OK;
 }
 
+// 按“停止并 join worker -> 移除音频效果 -> 合并文件 -> 删除组件”的顺序结束会话。
+// 直接调用方：end_realtime()/Godot MovieWriter 结束回调/析构；顶层调用方：停止录制或退出。
+// Godot Thread 规则：任何 recorder/delete/FileAccess close 都必须发生在 wait_to_finish() 之后。
 void ObsStyleMovieWriter::write_end() {
 	if (current_state != STATE_RECORDING) {
 		return;
@@ -213,6 +247,7 @@ void ObsStyleMovieWriter::write_end() {
 	update_recording_state(STATE_STOPPING);
 
 	// Stop independent recording threads
+	// 先停止视频和音频 writer，使中间 AVI 头/索引完整落盘。
 	if (video_recorder) {
 		video_recorder->stop_recording();
 	}
@@ -222,12 +257,15 @@ void ObsStyleMovieWriter::write_end() {
 	}
 
 	// Store audio_recorder reference before restore (to prevent double cleanup)
+	// 暂存拥有型指针，避免 restore 后的统一清理重复删除。
 	IndependentAudioRecorder *temp_audio_recorder = audio_recorder;
 
 	// Restore audio driver
+	// 实际上是撤销模块 AudioEffect，不替换 Godot AudioDriver singleton。
 	restore_audio_driver();
 
 	// Clear audio_recorder reference to prevent double cleanup in destructor
+	// 清空成员后由 temp_audio_recorder 负责唯一一次 delete。
 	audio_recorder = nullptr;
 
 	// Print recording summary
@@ -236,6 +274,7 @@ void ObsStyleMovieWriter::write_end() {
 	}
 
 	// Post-merge processing (only for desktop platforms)
+	// 中间 writer 已关闭后才允许 FileAccess/FFmpeg 重新打开文件合并。
 #ifndef WEB_ENABLED
 	if (obs_config.enable_post_merge && post_merge_processor) {
 		perform_post_merge();
@@ -243,6 +282,7 @@ void ObsStyleMovieWriter::write_end() {
 #endif
 
 	// Clean up components
+	// worker 已 join、音频回调已解绑，此时才能删除裸指针组件。
 	cleanup_components(temp_audio_recorder); // Pass temp_audio_recorder for proper cleanup
 
 	update_recording_state(STATE_UNINITIALIZED);
@@ -252,6 +292,8 @@ void ObsStyleMovieWriter::write_end() {
 	}
 }
 
+// 分配双缓冲、视频/音频 recorder，并打开两个中间 AVI。
+// 直接调用方：write_begin()；顶层调用方：录制启动。
 Error ObsStyleMovieWriter::setup_components() {
 	if (post_merge_processor == nullptr) {
 		post_merge_processor = new PostMergeProcessor();
@@ -259,6 +301,7 @@ Error ObsStyleMovieWriter::setup_components() {
 
 	// Independent recording mode
 	// Create double buffer
+	// 双缓冲连接 Godot 主线程生产者与视频 worker 消费者。
 	frame_buffer = new ThreadSafeFrameBuffer();
 	if (!frame_buffer) {
 		ERR_PRINT("ObsStyleMovieWriter: Failed to create frame buffer");
@@ -303,14 +346,18 @@ Error ObsStyleMovieWriter::setup_components() {
 	audio_config.enable_audio_monitoring = obs_config.enable_audio_monitoring;
 
 	// Note: audio_recorder needs to be associated with HybridAudioDriver in setup_audio_capture
+	// 音频 recorder 要等 setup_audio_capture 取得真实 mix rate 后再 initialize。
 
 	update_recording_state(STATE_INITIALIZED);
 
 	return OK;
 }
 
+// 删除已停止的组件；temp_audio_recorder 用于表达 write_end 转移出的唯一所有权。
+// 直接调用方：write_begin() 错误回滚、write_end()、析构。
 void ObsStyleMovieWriter::cleanup_components(IndependentAudioRecorder *temp_audio_recorder) {
 	// Clean up independent recording components
+	// 调用方必须已停止线程；各 recorder 析构仅作幂等兜底。
 	if (video_recorder) {
 		delete video_recorder;
 		video_recorder = nullptr;
@@ -324,6 +371,7 @@ void ObsStyleMovieWriter::cleanup_components(IndependentAudioRecorder *temp_audi
 	}
 
 	// Ensure audio_recorder is null
+	// 无论走哪个所有权分支，最终都清空成员借用状态。
 	audio_recorder = nullptr;
 
 	if (frame_buffer) {
@@ -340,6 +388,9 @@ void ObsStyleMovieWriter::cleanup_components(IndependentAudioRecorder *temp_audi
 	current_state = STATE_UNINITIALIZED;
 }
 
+// 在桌面端安装 Master Bus 捕获效果并注册 audio_recorder。
+// 直接调用方：write_begin()；顶层调用方：录制启动。
+// Godot 规则：AudioServer Bus 只能在主线程变更；AudioEffect::process 随后运行在音频线程。
 Error ObsStyleMovieWriter::setup_audio_capture() {
 #ifdef WEB_ENABLED
 	// Web platform uses MediaRecorder API audio from MovieWriter
@@ -349,6 +400,7 @@ Error ObsStyleMovieWriter::setup_audio_capture() {
 	return OK;
 #else
 	// Desktop platform: capture Master through a module-owned AudioEffect.
+	// 模块自有 AudioEffect 捕获最终 Master 混音，不替换全局 AudioDriver。
 	hybrid_audio_driver = memnew(HybridAudioDriver);
 	Error capture_error = hybrid_audio_driver->init(AudioServer::get_singleton()->get_mix_rate(), AudioDriver::SpeakerMode(AudioServer::get_singleton()->get_speaker_mode()));
 	if (capture_error != OK) {
@@ -377,6 +429,7 @@ Error ObsStyleMovieWriter::setup_audio_capture() {
 	}
 
 	// Register audio recorder with HybridAudioDriver
+	// 注册的是借用指针，restore_audio_driver 必须在 recorder delete 前撤销。
 	hybrid_audio_driver->register_audio_recorder(audio_recorder);
 
 	// Enable recording mode
@@ -387,6 +440,8 @@ Error ObsStyleMovieWriter::setup_audio_capture() {
 	return OK;
 }
 
+// 撤销 recorder 借用关系、停用并移除 AudioEffect，再释放捕获器。
+// 直接调用方：write_end()/错误回滚/析构；必须在 Godot 主线程执行。
 void ObsStyleMovieWriter::restore_audio_driver() {
 	if (hybrid_audio_driver && audio_recorder) {
 		hybrid_audio_driver->unregister_audio_recorder(audio_recorder);
@@ -603,6 +658,9 @@ bool ObsStyleMovieWriter::is_paused() const {
 	return false; // Pause functionality not yet implemented
 }
 
+// 同步后处理入口：选择 FFmpeg 或内建 AVI 合并器，把两个已关闭的中间文件合为最终文件。
+// 直接调用方：write_end()；顶层调用方：Native API，或 cmd/spx 启动的电影录制结束。
+// FileAccess/外部进程操作会阻塞当前主线程，因此必须在 worker 停止后执行，且不与 writer 并发访问文件。
 void ObsStyleMovieWriter::perform_post_merge() {
 	if (obs_config.enable_debug_output) {
 		print_line("ObsStyleMovieWriter::perform_post_merge() called");
@@ -619,6 +677,7 @@ void ObsStyleMovieWriter::perform_post_merge() {
 	}
 
 	// Configure post-merge processor
+	// 每次会话同步下发 FFmpeg 路径、中间文件保留和诊断策略。
 	PostMergeProcessor::MergeConfig merge_config;
 	merge_config.method = PostMergeProcessor::METHOD_FFMPEG_SYSTEM;
 	merge_config.keep_intermediate_files = obs_config.keep_intermediate_files;
@@ -626,6 +685,7 @@ void ObsStyleMovieWriter::perform_post_merge() {
 	merge_config.ffmpeg_path = obs_config.ffmpeg_path;
 
 	// Try to use recommended method if FFmpeg is not available
+	// FFmpeg 不可用时回退到内建 AVI 合并。
 	PostMergeProcessor::MergeMethod recommended = post_merge_processor->get_recommended_method();
 	if (recommended != PostMergeProcessor::METHOD_FFMPEG_SYSTEM) {
 		merge_config.method = recommended;
@@ -637,6 +697,7 @@ void ObsStyleMovieWriter::perform_post_merge() {
 	post_merge_processor->set_config(merge_config);
 
 	// Construct file paths
+	// 路径必须与 setup_components 创建中间 writer 时的后缀完全一致。
 	String video_path = output_file_path + "_video.avi";
 	String audio_path = output_file_path + "_audio.avi";
 	String merged_path = output_file_path + "_merged.avi";
@@ -649,6 +710,7 @@ void ObsStyleMovieWriter::perform_post_merge() {
 	}
 
 	// Execute merge
+	// merge_files 返回结构化错误；失败时保留独立音视频文件便于恢复。
 	PostMergeProcessor::MergeResult result = post_merge_processor->merge_files(video_path, audio_path, merged_path);
 
 	if (result.error_code == OK) {

@@ -40,7 +40,7 @@
 
 #define SPX_CALLBACK SpxEngine::get_singleton()->get_callbacks()
 
-// Checked main-thread lookup with each API's existing default return value.
+// 在主线程校验后查找节点；各 API 继续沿用原有的默认返回值。
 #define SPX_REQUIRE_UI_VOID() \
 	SPX_UI_LOOKUP_VOID(obj, __func__)
 
@@ -48,6 +48,7 @@
 	SPX_UI_LOOKUP_RETURN(obj, __func__, VALUE)
 
 void SpxUiMgr::_create_canvas_layer() {
+	// 直接调用方：on_awake；CanvasLayer 挂到场景树后由父节点拥有，使 UI 独立于 Camera2D。
 	canvas_layer = memnew(CanvasLayer);
 	canvas_layer->set_name("SpxUiMgr");
 	get_spx_root()->add_child(canvas_layer);
@@ -107,6 +108,8 @@ ESpxUiType SpxUiMgr::get_node_type(Node *obj) {
 }
 
 void SpxUiMgr::on_spx_ui_clicked(GdObj p_gid, ObjectID p_binding_id) {
+	// 直接调用方：SpxUiBinding 的 Button::pressed 信号；顶层消费者是 Go UI 点击事件。
+	// binding_id 防止旧节点延迟信号误投递给复用同一 Go ID 的新包装器。
 	SpxUi *node = get_node(p_gid);
 	if (node == nullptr || !node->owns_binding(p_binding_id)) {
 		return;
@@ -115,6 +118,7 @@ void SpxUiMgr::on_spx_ui_clicked(GdObj p_gid, ObjectID p_binding_id) {
 }
 
 void SpxUiMgr::on_spx_ui_destroyed(GdObj p_gid, ObjectID p_binding_id) {
+	// 直接调用方：SpxUiBinding::NOTIFICATION_PREDELETE；同步移除包装器，避免 ObjectID 失效后泄漏。
 	if (!Spx::is_initialized()) {
 		return;
 	}
@@ -136,6 +140,7 @@ void SpxUiMgr::on_awake() {
 }
 
 void SpxUiMgr::_clear_nodes(bool emit_destroyed, bool queue_controls) {
+	// Godot 信号/queue_free 可能重入 Manager，因此先交换/清空索引，再逐个解除绑定和释放。
 	Vector<SpxUi *> nodes;
 	for (const auto &entry : id_objects) {
 		nodes.push_back(entry.value);
@@ -193,6 +198,8 @@ Control *SpxUiMgr::create_control(GdString path) {
 }
 
 SpxUi *SpxUiMgr::on_create_node(Control *control, GdInt type, bool is_attach) {
+	// 直接调用方：所有 create_* 和 bind_node；顶层来自 Go internal/ui/UINode。
+	// Manager 拥有 new 出的 SpxUi，Control 则由场景树拥有。
 	if (control == nullptr) {
 		return nullptr;
 	}
@@ -334,6 +341,7 @@ void SpxUiMgr::set_text(GdObj obj, GdString text) {
 }
 
 void SpxUiMgr::set_list_items(GdObj obj, GdString label, GdArray items, GdColor color) {
+	// 直接调用方：ABI；顶层调用方：Go internal/ui 列表监视器刷新。
 	SPX_REQUIRE_UI_VOID();
 	auto monitor = Object::cast_to<SpxListMonitor>(node->get_control());
 	ERR_FAIL_NULL(monitor);
@@ -494,7 +502,7 @@ void SpxUiMgr::set_flip(GdObj obj, GdBool horizontal, GdBool is_flip) {
 	node->set_flip(horizontal, is_flip);
 }
 
-// Range updates from game state must not emit user-input signals.
+// 游戏状态驱动的范围值更新不能发出用户输入信号。
 void SpxUiMgr::set_range(GdObj obj, GdFloat minimum, GdFloat maximum, GdFloat step, GdFloat value) {
 	SPX_REQUIRE_UI_VOID();
 	auto range = Object::cast_to<Range>(node->get_control());

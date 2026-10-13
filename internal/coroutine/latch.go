@@ -16,8 +16,8 @@
 
 package coroutine
 
-// Latch is a scheduler-aware, idempotent one-shot signal.
-// Wait atomically publishes blocking and waiter registration.
+// Latch 是调度器感知、幂等且只能打开一次的信号闩。
+// Wait 会原子发布 Thread 阻塞状态和等待者登记，Open 唤醒当时全部等待者。
 type Latch struct {
 	manager *Coroutines
 
@@ -25,7 +25,7 @@ type Latch struct {
 	waiters waiterSet
 }
 
-// NewLatch creates a closed latch associated with this coroutine manager.
+// NewLatch 创建一个尚未打开、绑定当前 Coroutines 的 Latch。
 func (p *Coroutines) NewLatch() *Latch {
 	return &Latch{
 		manager: p,
@@ -33,21 +33,19 @@ func (p *Coroutines) NewLatch() *Latch {
 	}
 }
 
-// Done is closed when the latch opens.
+// Done 返回在 Latch 打开时关闭的 channel，供 select 或外部 goroutine 使用。
 func (p *Latch) Done() <-chan struct{} {
 	return p.done
 }
 
-// Open opens the latch and resumes every registered waiter. Repeated calls are
-// safe and have no effect.
+// Open 打开 Latch，并恢复所有已登记受管等待者；重复调用安全且无效果。
 func (p *Latch) Open() {
 	for waiter := range p.waiters.close(p.done) {
 		p.manager.markRunnableAndResume(waiter)
 	}
 }
 
-// Wait suspends the current managed coroutine until the latch opens. Calls
-// outside this latch's coroutine manager block the calling goroutine.
+// Wait 等待 Latch 打开。同一管理器的受管协程 Yield；外部 goroutine 同步阻塞。
 func (p *Latch) Wait() {
 	manager := p.manager
 	me := manager.callerThread()

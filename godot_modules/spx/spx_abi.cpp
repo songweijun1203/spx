@@ -35,6 +35,7 @@
 #include <limits>
 
 #ifdef __EMSCRIPTEN__
+// Web 侧用私有元数据注册表验证 Wasm 线性内存中的描述符，防止任意地址被当作 GdArray。
 extern "C" bool gdspx_register_array_info(GdArray array);
 extern "C" bool gdspx_release_array_info(GdArray array);
 extern "C" bool gdspx_validate_array_info(GdArray array);
@@ -42,9 +43,12 @@ extern "C" bool gdspx_validate_array_info(GdArray array);
 
 namespace {
 
+// 单数组元素数上限，避免损坏或恶意 ABI 参数触发超大分配/遍历。
 constexpr int32_t SPX_MAX_ARRAY_ELEMENTS = 16 * 1024 * 1024;
+// 单数组数据区字节上限；不含 GdArrayInfo 描述符本身。
 constexpr size_t SPX_MAX_ARRAY_BYTES = 256 * 1024 * 1024;
 
+// 返回线类型的固定元素大小；UNKNOWN 或未支持类型返回 0。
 constexpr size_t array_element_size(int32_t type) {
 	switch (type) {
 		case GD_ARRAY_TYPE_INT64:
@@ -65,10 +69,13 @@ constexpr size_t array_element_size(int32_t type) {
 } // namespace
 
 void SpxAbi::free_return_cstr(GdString str_ptr) {
+	// 直接调用方：生成的 gdextension_spx_global_free_string；顶层调用方：Go binding 字符串转换。
 	free((void *)str_ptr);
 }
 
 GdString SpxAbi::to_return_cstr(const String &ret_val) {
+	// 直接调用方：SpxReturnStr；顶层调用方：返回字符串的 Go SPX API。
+	// 使用 malloc 是 ABI 契约的一部分，必须与 free_return_cstr 配对，不能用 memdelete。
 	auto cstr = ret_val.utf8();
 	char *result = (char *)malloc(cstr.size() + 1);
 	if (result == nullptr) {
@@ -79,6 +86,7 @@ GdString SpxAbi::to_return_cstr(const String &ret_val) {
 }
 
 GdArray SpxAbi::create_array(int32_t type, int32_t size) {
+	// 直接调用方：物理/寻路等返回数组 API；顶层调用方：Go gdengine Manager。
 	if (size < 0 || size > SPX_MAX_ARRAY_ELEMENTS) {
 		return nullptr;
 	}
@@ -99,8 +107,7 @@ GdArray SpxAbi::create_array(int32_t type, int32_t size) {
 	array->size = size;
 	array->type = type;
 
-	// Empty arrays have no payload; nonempty arrays zero-init string slots so
-	// partial construction can always use the same cleanup path.
+	// 空数组没有数据区；非空数组统一清零，尤其保证字符串槽在部分构造失败时也能安全释放。
 	array->data = size > 0 ? calloc(static_cast<size_t>(size), element_size) : nullptr;
 	if (size > 0 && !array->data) {
 		free(array);
@@ -119,14 +126,15 @@ GdArray SpxAbi::create_array(int32_t type, int32_t size) {
 }
 
 void SpxAbi::free_array(GdArray array) {
+	// 直接调用方：Go/JS binding 或 C++ 失败清理路径；顶层调用方：跨语言数组消费方。
 	if (!array) {
 		return;
 	}
 #ifdef __EMSCRIPTEN__
-	// Web ownership lives in the private metadata registry.
+	// Web 的所有权信息存放在私有元数据注册表中，由注册表验证并释放。
 	gdspx_release_array_info(array);
 #else
-	// Release string elements before the backing array.
+	// Native 端先释放每个字符串元素，再释放数据区和描述符。
 	if (array->type == GD_ARRAY_TYPE_STRING && array->data && array->size > 0 &&
 			array->size <= SPX_MAX_ARRAY_ELEMENTS) {
 		char **strings = (char **)array->data;
@@ -146,6 +154,7 @@ void SpxAbi::free_array(GdArray array) {
 
 void *SpxAbi::_get_array(GdArray array, int64_t index, int type_size,
 		int32_t expected_type) {
+	// 直接调用方：get_array/set_array 模板；顶层调用方：各 SPX_BIND 数组参数/返回值 API。
 #ifdef __EMSCRIPTEN__
 	if (!gdspx_validate_array_info(array)) {
 		return nullptr;

@@ -4,15 +4,15 @@ from misc.utility.scons_hints import *
 Import("env")
 Import("env_modules")
 
+# Godot 自定义模块规则：必须克隆 modules 环境，避免 SPX 私有 include/宏污染其他模块。
+# 直接调用方：Godot 根 SConstruct 的模块扫描；顶层调用方：make/buildctl 引擎构建任务。
 env_spx = env_modules.Clone()
 env_spx.Prepend(CPPPATH=["#thirdparty/minimp3"])
 
-# Keep every SPX-owned path relative to the custom module source directory.
-# A leading "#" would resolve against the Godot checkout instead.
+# SPX 自有路径必须相对当前 custom module；SCons 中前导 "#" 会改为相对 Godot 源码根。
 module_dir = env.Dir(".").srcnode()
 
-# LunaSVG is an SPX-private rasterizer. Godot's SVG module keeps using its
-# upstream ThorVG implementation.
+# LunaSVG 只供 SPX 资源栅格化使用，不替换 Godot SVG 模块默认的 ThorVG。
 lunasvg_dir = module_dir.Dir("thirdparty/lunasvg")
 lunasvg_sources = [
     "source/graphics.cpp",
@@ -51,7 +51,7 @@ env_spx.Append(
     ]
 )
 
-# LunaSVG shares the advanced text server's HarfBuzz and ICU implementations.
+# 与 Godot 高级文本服务共享 HarfBuzz/ICU，避免同一进程链接两份实现和符号。
 if "text_server_adv" in env.module_list:
     if env["builtin_harfbuzz"]:
         env_spx.Prepend(CPPPATH=["#thirdparty/harfbuzz/src"])
@@ -66,7 +66,7 @@ if "text_server_adv" in env.module_list:
         )
     env_spx.Append(CPPDEFINES=["LUNASVG_ENABLE_HARFBUZZ", "LUNASVG_ENABLE_ICU_BIDI"])
 
-# Module tests are compiled from tests/test_main.cpp with the root environment.
+# Godot 规则：模块测试由 tests/test_main.cpp 使用根 env 编译，所需 include/宏要同步给 env。
 if env["tests"]:
     env.Prepend(CPPPATH=[lunasvg_dir.Dir("include")])
     env.Append(CPPDEFINES=["LUNASVG_BUILD_STATIC", "PLUTOVG_BUILD_STATIC"])
@@ -77,7 +77,7 @@ env_spx_thirdparty.disable_warnings()
 env_spx_thirdparty.add_source_files(lunasvg_obj, lunasvg_sources)
 env.modules_sources += lunasvg_obj
 
-# Godot module source files.
+# 模块根目录源码加入 Godot modules_sources；recorder 子目录由下方 SConscript 单独加入。
 spx_module_obj = []
 env_spx.add_source_files(spx_module_obj, "*.cpp")
 env.modules_sources += spx_module_obj
@@ -87,17 +87,15 @@ Export("env", "env_spx")
 SConscript("recorder/SCsub")
 
 if env["platform"] == "web":
-    # Web bridge entry points are referenced by JavaScript by name, so they
-    # must be linked into the main Web program rather than hidden in the
-    # module archive (where the linker cannot see a native reference).
+    # Web 桥导出按符号名被 JavaScript 引用，没有 C++ 静态引用；必须直接链接进 Web
+    # 主程序，若只放在模块静态库中会被链接器当成未使用对象丢弃。
     spx_web_sources = []
     env_spx.add_source_files(spx_web_sources, "web/*.cpp")
 
     web_engine_dir = module_dir.Dir("web/js/engine")
     web_library_dir = module_dir.Dir("web/js/libs")
-    # Godot owns the ordered default groups; SPX declares only the files it
-    # replaces or adds. This prevents an upstream default from disappearing
-    # merely because the module has not copied its name into this SCsub yet.
+    # Godot 维护默认 JS 文件的有序集合；SPX 只声明覆盖项和追加项，避免上游新增默认文件
+    # 因本模块没有同步复制文件名而从最终模板中消失。
     env.Replace(
         WEB_JS_LIBRARY_OVERRIDES={
             "library_godot_audio.js": web_library_dir.File("library_godot_audio.js"),

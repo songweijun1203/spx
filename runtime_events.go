@@ -38,34 +38,66 @@ const (
 // Event Bindings
 type eventSink = coreevent.Sink
 
+// scriptEventBindings 是挂在 Game 或 SpriteImpl 上的事件注册入口。
+// 它不直接保存每一种事件的处理列表，而是保存当前对象的 owner，
+// 再把注册动作转交给同一个 scriptEventRegistry。这样 Game、每个精灵
+// 都可以使用相同的 OnKey/OnClick/OnMsg 等 API，同时事件处理器仍能
+// 通过 owner 区分“由谁注册”和“应该派发给谁”。
 type scriptEventBindings struct {
+	// 同一局 Game 的事件注册表。Game 的 scriptEvents 持有唯一实例，
+	// SpriteImpl 的 bindings 通过该指针共享注册表，而不是各自创建一套。
 	*scriptEventRegistry
+	// 当前注册者，可以是 *Game 或 *SpriteImpl；事件派发时用于筛选和排序。
 	owner threadObj
 }
 
+// scriptEventRegistry 是一局游戏的 Go 脚本事件中心。
+//
+// 它负责三件事：
+//  1. 把 OnStart、OnKey、OnClick、OnCond、OnMsg 等注册为 event.Sink；
+//  2. 按事件类型、owner 和 Cond 快照匹配处理器；
+//  3. 事件命中后构造 coroutine.Task，交给 gco 创建并调度处理器协程。
+//
+// 它不是底层输入队列：键盘/鼠标/物理回调的 pending、ready 缓存分别维护在
+// internal/engine 中；这些底层输入被转换成高层事件后，才会调用本注册表。
+// 它也不等同于 Game.events 通道，Broadcast、OnCond、OnTouchStart 等事件
+// 可以绕过 Game.events，直接进入这里的匹配和派发流程。
 type scriptEventRegistry struct {
-	game    *Game
+	// 所属游戏，用于获取当前精灵顺序、舞台 owner 和派发上下文。
+	game *Game
+	// 按 Bucket 保存所有事件注册项。每一项 Sink 包含 Owner、匹配函数和 Handler。
 	manager coreevent.Manager
-	// Accessed only in managed script slices, under the scheduler's runMu.
-	messageExecutions   map[coroutine.Thread]messageReceiverExecution
-	stopAllEpoch        atomic.Uint64
-	pendingStartThreads sync.Map    // map[coroutine.Thread]struct{}
-	pendingConditions   []eventSink // engine frame thread only
+	// 记录正在执行的消息处理器，用于 Broadcast 递归/级联派发时控制同一接收者
+	// 在当前帧和脚本轮次中的执行顺序。该字段只在持有调度器 runMu 的脚本切片中访问。
+	messageExecutions map[coroutine.Thread]messageReceiverExecution
+	// StopAll 的代际计数。OnStart 批量启动期间若发生全局停止，新启动的处理器
+	// 会通过代际变化在首次让出时被取消。
+	stopAllEpoch atomic.Uint64
+	// 正在登记、尚未真正进入 Run 的 OnStart 协程集合；用于启动阶段的生命周期保护。
+	pendingStartThreads sync.Map // map[coroutine.Thread]struct{}
+	// pendingConditions 保存 OnEngineBeforeUpdate 已完成求值、等待
+	// OnEngineUpdate 派发的条件处理器快照，仅由引擎帧线程访问。
+	pendingConditions []eventSink
 }
 
-// messageDispatchContext tracks receivers visited by one broadcast tree.
-// Its state is accessed only by managed scripts holding the scheduler's runMu.
+// messageDispatchContext 记录一次 Broadcast 级联过程中已经获得执行机会的接收者。
+// 同一接收者在同一帧、同一脚本轮次中重复收到消息时，会先让出到下一轮，
+// 避免递归广播无限重入。其状态只在持有调度器 runMu 的脚本切片中访问。
 type messageDispatchContext struct {
 	frame     int64
 	round     uint64
 	receivers map[*messageEventHandler]struct{}
 }
 
+// messageReceiverExecution 把当前消息处理协程和本次 Broadcast 的上下文关联起来，
+// 使处理器内部再次 Broadcast 时仍能沿用同一套接收者去重/轮次规则。
 type messageReceiverExecution struct {
 	context  *messageDispatchContext
 	receiver *messageEventHandler
 }
 
+// startEventDispatcher 是 OnStart 派发阶段的协程 owner 标记，用来把启动事件
+// 的登记和处理从普通事件循环中区分出来。
 type startEventDispatcher struct{}
 
 // Click Dispatch
@@ -76,6 +108,12 @@ type clicker interface {
 	Visible() bool
 }
 
+// OnStart 登记项目级一次性启动处理器；登记本身不会创建或调度协程。
+//
+// 直接调用方：Game/生成精灵的 Main，包括 cloneSprite 对克隆 Main 的重跑；总体流程
+// 调用方：bootstrap 完成后的 dispatchStartEventIfNeeded。若全局启动快照尚未生成，
+// Sink 会进入 BucketStart，稍后统一创建协程；若快照已经生成，运行期克隆的迟到注册
+// 会被静默忽略，因为克隆自己的出生生命周期应由 OnCloned 表达，而非重放 OnStart。
 func (p *scriptEventBindings) OnStart(onStart func()) {
 	sink := coreevent.NewSink(p.owner, onStart)
 	if p.scriptEventRegistry.manager.TryAddStart(sink) {
@@ -208,16 +246,22 @@ func (p *Game) BroadcastAndWait__1(msg MsgName, data any) {
 	p.doBroadcast(msg, data, true)
 }
 
+// bindScriptEvents 初始化本局 Game 的事件绑定，使 Game 自身也能注册
+// OnStart、OnKey、OnMsg 等脚本事件。所有 SpriteImpl 随后共享 p.scriptEvents。
 func (p *Game) bindScriptEvents() {
 	p.scriptEvents.game = p
 	p.scriptEventBindings.bind(&p.scriptEvents, p)
 }
 
+// bind 将事件注册入口绑定到指定注册表和 owner。
+// owner 决定事件属于 Game 还是某个 SpriteImpl，也是后续匹配、排序和清理的依据。
 func (p *scriptEventBindings) bind(registry *scriptEventRegistry, owner threadObj) {
 	p.scriptEventRegistry = registry
 	p.owner = owner
 }
 
+// clearHandlers 删除当前 owner 注册的全部 Sink。
+// 精灵销毁、克隆状态清理或脚本重载时使用，避免旧对象继续收到事件。
 func (p *scriptEventBindings) clearHandlers() {
 	p.scriptEventRegistry.manager.DeleteOwner(p.owner)
 }
@@ -231,6 +275,8 @@ func (p *scriptEventBindings) onAwake(onAwake func()) {
 	p.scriptEventRegistry.manager.Add(coreevent.BucketAwake, coreevent.NewSink(owner, onAwake, coreevent.MatchOwnerOrNil(owner)))
 }
 
+// registerKeyHandler 将一个按键处理器登记到具体按键桶或任意按键桶。
+// 使用 IgnoreWhileRunning 策略：同一处理器仍在执行时，新的同类按键不会重入。
 func (p *scriptEventBindings) registerKeyHandler(keys []Key, handler func(Key)) {
 	if len(keys) == 0 {
 		return
@@ -244,6 +290,9 @@ func (p *scriptEventBindings) registerKeyHandler(keys []Key, handler func(Key)) 
 	p.scriptEventRegistry.manager.Add(coreevent.BucketKeyPressed, sink)
 }
 
+// registerMessageHandler 登记 IReceive/Broadcast 处理器。
+// 消息处理器采用 RestartExisting：同一 owner 再次收到消息时取消旧执行并启动新执行，
+// 可选 cond 用于筛选具体消息名或其他消息条件。
 func (p *scriptEventBindings) registerMessageHandler(handler func(string, any), cond ...func(any) bool) {
 	p.scriptEventRegistry.manager.Add(coreevent.BucketIReceive, newScriptEventSink(
 		p.owner, handler, coroutine.RestartExisting, cond...,
@@ -453,6 +502,13 @@ func (p *scriptEventRegistry) doWhenTouchStart(this threadObj, obj *SpriteImpl) 
 	})
 }
 
+// doWhenCloned 将克隆生命周期事件直接派发给新精灵自己的注册项。
+//
+// 直接调用方：SpriteImpl.doWhenCloned（由嵌入的 scriptEventBindings 提升）最终来自
+// dispatchCloneLifecycle；总体流程调用方：精灵脚本的 Clone API。这里不进入普通事件
+// 队列，而是立即 snapshot BucketCloned，并只选择 Owner == this 的 Sink。
+// BatchWaitFirstSlice 表示克隆调用方等待处理器获得一次执行机会，而不是等待整个
+// OnCloned 完成；处理器若调用 Wait/WaitNextFrame，克隆流程会在该挂起点之后继续。
 func (p *scriptEventRegistry) doWhenCloned(this threadObj, data any) {
 	p.dispatchTarget(coreevent.BucketCloned, this, scriptEventDispatch{
 		mode:      coroutine.BatchWaitFirstSlice,

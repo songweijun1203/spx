@@ -8,12 +8,14 @@
 
 如果您是 SPX 的使用者，您可能对以下文档更感兴趣：
 
+- [游戏项目目录与 index.json 配置](./game/project_structure.md) - 了解典型目录、命名规则、资源路径和各级 `index.json` 字段
 - [命令行工具 (spx) 使用指南](./game/cmd_spx.md) - 学习如何使用 SPX 命令行工具创建、运行和导出项目
 
 ### SPX 开发者
 
 如果您是 SPX 的开发者或贡献者，您可能对以下文档更感兴趣：
 
+- [单个精灵的初始化流程与字段来源](./game/sprite_initialization.md) - 了解 `SpriteConfig`、组件、Godot 代理和脚本生命周期之间的初始化关系
 - [Makefile 命令指南](./engine/cmd_make.md) - 学习如何使用项目中的 Makefile 命令进行开发和构建
 - [SPX 与 Godot runtime 发布流程](./engine/release.md) - 了解版本身份、冻结顺序、验证矩阵和三阶段 runtime 自举
 
@@ -23,7 +25,9 @@
 
 游戏开发文档主要面向使用 SPX 进行游戏开发的用户，包括：
 
-- 命令行工具使用指南
+- [游戏项目目录与 index.json 配置](./game/project_structure.md) - 了解项目、角色、声音和字体配置
+- [单个精灵的初始化流程与字段来源](./game/sprite_initialization.md) - 对照代码理解一个精灵如何从 JSON 变成 Go 组件和 Godot 代理
+- [命令行工具使用指南](./game/cmd_spx.md) - 了解 SPX 项目的创建、运行和导出
 - [动画绑定音频说明](./game/animation_audio.md) - 了解 `onStart` / `onPlay` 的生命周期和动画停止时的音频行为
 - [静态 WebP 图片素材](./image_assets.md) - 了解 WebP 序列帧、透明通道和编码建议
 - [项目字体配置](./project_fonts.md) - 了解项目字体目录和字体元数据规则
@@ -46,6 +50,7 @@
 - [输入录制与回放说明](./engine/input_replay.md) - 了解 Web host 固定 FPS 输入录制、逐 tick 回放与截图测试配合方式
 - [SPX 坐标系统与 Godot 边界](./engine/coordinate_system.md) - 了解逻辑、资产、渲染、物理和 Godot 坐标的所有权与转换规则
 - [代码生成器说明](./engine/code_generator.md) - 了解生成代码和接口绑定规则
+- [Web 模式 Godot 到 Go 回调分类说明](./engine/Web模式Godot到Go回调分类说明.md) - 查看 `CallbackInfo` 的 43 种 Web 回调、分发路径及当前落地状态
 - [物理 API 设计草案](./engine/physic_api.md) - 了解物理 API 的历史设计和当前实现差异
 - [Web 平台模式说明](./engine/web.md) - 了解 normal、worker、minigame 和 miniprogram 模式
 - [Web Worker 方案说明](./engine/web_worker_mode.md) - 了解 worker 模式的实现和历史方案

@@ -31,6 +31,11 @@
 #ifndef GDEXTENSION_SPX_EXT_H
 #define GDEXTENSION_SPX_EXT_H
 
+// 本文件由 SPX 绑定生成器整体生成，请勿直接修改生成结果。
+// Manager 函数指针来自 godot_modules/spx/spx*mgr.h 中各 Spx*Mgr 类的
+// public SPX_BIND 单行声明；公共 ABI 类型、回调类型和 SpxCallbackInfo 则由
+// 本模板维护。需要调整接口时应修改 Manager 头文件或本模板并重新生成。
+
 #include "gdextension_interface.h"
 #ifndef NOT_GODOT_ENGINE
 #include "core/variant/variant.h"
@@ -41,6 +46,7 @@ extern void gdextension_spx_setup_interface();
 extern "C" {
 #endif
 
+// SPX 在 C++、Native Go 和 Web/Wasm 之间共享的稳定 ABI 类型别名。
 typedef GDExtensionConstStringPtr GdString;
 typedef GDExtensionInt GdInt;
 typedef GDExtensionInt GdObj;
@@ -52,6 +58,7 @@ typedef Vector2 GdVec2;
 typedef Color GdColor;
 typedef Rect2 GdRect2;
 
+// 跨语言数组的统一描述符：size 是元素数量，type 是 GdArrayType，data 指向数据区。
 typedef struct {
 	int32_t size;
 	int32_t type;
@@ -60,6 +67,7 @@ typedef struct {
 
 typedef GdArrayInfo *GdArray;
 
+// 数组类型编号由 generate/common/arrays.go 统一维护，必须与 Go/JavaScript 侧一致。
 typedef enum {
 	GD_ARRAY_TYPE_UNKNOWN = 0,
 	GD_ARRAY_TYPE_INT64 = 1,
@@ -70,8 +78,8 @@ typedef enum {
 	GD_ARRAY_TYPE_GDOBJ = 6,
 } GdArrayType;
 
+// Web 快速调用使用的定长参数帧：第 0 个槽保存返回值，其余槽保存最多 8 个参数。
 typedef struct {
-	// Slot 0 holds Ret; slots 1-8 hold Arg0-Arg7.
 	GdVec4 Ret;
 	GdVec4 Arg0;
 	GdVec4 Arg1;
@@ -85,11 +93,11 @@ typedef struct {
 
 typedef void *GDExtensionSpxCallbackInfoPtr;
 typedef void (*GDExtensionSpxGlobalRegisterCallbacks)(GDExtensionSpxCallbackInfoPtr callback_ptr);
-// Releases a caller-owned Native string, including after engine shutdown.
+// 释放 Native 调用方持有的返回字符串；即使引擎已经关闭也允许调用。
 typedef void (*GDExtensionSpxGlobalFreeString)(GdString value);
 
-// Callbacks run synchronously. GdString arguments are borrowed until the callback returns;
-// copy them to retain their value, and do not free them.
+// 以下回调由 Godot 同步调用 Go。GdString 参数只借用到本次回调返回：如需长期保存
+// 必须复制其内容，接收方不能释放该指针。
 typedef void (*GDExtensionSpxCallbackOnEngineStart)();
 typedef void (*GDExtensionSpxCallbackOnEngineUpdate)(GdFloat delta);
 typedef void (*GDExtensionSpxCallbackOnEngineFixedUpdate)(GdFloat delta);
@@ -144,8 +152,10 @@ typedef void (*GDExtensionSpxCallbackOnUiToggle)(GdObj obj, GdBool is_on);
 typedef void (*GDExtensionSpxCallbackOnUiTextChanged)(GdObj obj, GdString text);
 
 
+// Godot 保存的完整 Go 回调表。Go 注册真实函数前，SpxEngine 会使用
+// spx_callback_defaults.gen.h 中按本结构自动生成的同签名空回调。
 typedef struct {
-	// engine
+	// 引擎生命周期。
 	GDExtensionSpxCallbackOnEngineStart func_on_engine_start;
 	GDExtensionSpxCallbackOnEngineUpdate func_on_engine_update;
 	GDExtensionSpxCallbackOnEngineFixedUpdate func_on_engine_fixed_update;
@@ -154,27 +164,25 @@ typedef struct {
 	GDExtensionSpxCallbackOnEngineReset func_on_engine_reset;
 	GDExtensionSpxCallbackOnEnginePause func_on_engine_pause;
 
-	// scene
+	// 场景与精灵生命周期。
 	GDExtensionSpxCallbackOnSceneSpriteInstantiated func_on_scene_sprite_instantiated;
-	// sprite
 	GDExtensionSpxCallbackOnSpriteReady func_on_sprite_ready;
 	GDExtensionSpxCallbackOnSpriteUpdated func_on_sprite_updated;
 	GDExtensionSpxCallbackOnSpriteFixedUpdated func_on_sprite_fixed_updated;
 	GDExtensionSpxCallbackOnSpriteDestroyed func_on_sprite_destroyed;
 
-	// animation
+	// 动画与视觉效果。
 	GDExtensionSpxCallbackOnSpriteFramesSetChanged func_on_sprite_frames_set_changed;
 	GDExtensionSpxCallbackOnSpriteAnimationChanged func_on_sprite_animation_changed;
 	GDExtensionSpxCallbackOnSpriteFrameChanged func_on_sprite_frame_changed;
 	GDExtensionSpxCallbackOnSpriteAnimationLooped func_on_sprite_animation_looped;
 	GDExtensionSpxCallbackOnSpriteAnimationFinished func_on_sprite_animation_finished;
-	// vfx
 	GDExtensionSpxCallbackOnSpriteVfxFinished func_on_sprite_vfx_finished;
-	// visibility
+	// 屏幕可见性。
 	GDExtensionSpxCallbackOnSpriteScreenExited func_on_sprite_screen_exited;
 	GDExtensionSpxCallbackOnSpriteScreenEntered func_on_sprite_screen_entered;
 
-	// input
+	// 输入事件。
 	GDExtensionSpxCallbackOnMousePressed func_on_mouse_pressed;
 	GDExtensionSpxCallbackOnMouseReleased func_on_mouse_released;
 	GDExtensionSpxCallbackOnKeyPressed func_on_key_pressed;
@@ -184,7 +192,7 @@ typedef struct {
 	GDExtensionSpxCallbackOnActionJustReleased func_on_action_just_released;
 	GDExtensionSpxCallbackOnAxisChanged func_on_axis_changed;
 
-	// physics
+	// 物理碰撞与触发事件。
 	GDExtensionSpxCallbackOnCollisionEnter func_on_collision_enter;
 	GDExtensionSpxCallbackOnCollisionStay func_on_collision_stay;
 	GDExtensionSpxCallbackOnCollisionExit func_on_collision_exit;
@@ -192,7 +200,7 @@ typedef struct {
 	GDExtensionSpxCallbackOnTriggerStay func_on_trigger_stay;
 	GDExtensionSpxCallbackOnTriggerExit func_on_trigger_exit;
 
-	// ui
+	// UI 生命周期与交互事件。
 	GDExtensionSpxCallbackOnUiReady func_on_ui_ready;
 	GDExtensionSpxCallbackOnUiUpdated func_on_ui_updated;
 	GDExtensionSpxCallbackOnUiDestroyed func_on_ui_destroyed;
@@ -206,7 +214,9 @@ typedef struct {
 } SpxCallbackInfo;
 
 
-
+// 以下函数指针由生成器扫描 public SPX_BIND 声明后插入。名称规则为：
+// SpxPenMgr::pen_stamp_sprite -> GDExtensionSpxPenPenStampSprite。
+// 为保持统一 C ABI，原 C++ 非 void 返回值会改写成末尾的 ret_value 输出指针。
 // SpxAudio
 typedef void (*GDExtensionSpxAudioStopAll)();
 typedef void (*GDExtensionSpxAudioCreateAudio)(GdObj *ret_value);

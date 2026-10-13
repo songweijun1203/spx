@@ -38,6 +38,7 @@
 
 class Control;
 
+// UI 绑定事件接收接口，由 SpxUiMgr 实现；binding_id 用于拒绝已失效绑定的迟到信号。
 class SpxUiBindingListener {
 public:
 	virtual void on_spx_ui_clicked(GdObj p_gid, ObjectID p_binding_id) = 0;
@@ -45,18 +46,19 @@ public:
 	virtual ~SpxUiBindingListener() = default;
 };
 
-// An internal child of an SPX-owned Control. Keeping the integration in the
-// module lets SPX observe standard button signals and Control lifetime without
-// adding SPX fields or callbacks to upstream Godot classes.
+// SPX Control 的内部子节点：监听标准 Button 信号和 Control 生命周期，而无需修改 Godot 原类。
+// 直接调用方是 SpxUi/SpxUiMgr；顶层事件来自用户点击，最终经 SPX_CALLBACK 回到 Go UI 事件。
+// Godot 规则：子 Node 随父节点销毁；NOTIFICATION_PREDELETE 中只能做解除引用等轻量清理。
 class SpxUiBinding : public Node {
 	GDCLASS(SpxUiBinding, Node);
 
-	ObjectID control_id;
-	GdObj gid = 0;
-	SpxUiBindingListener *listener = nullptr;
+	ObjectID control_id; // 父 Control 的弱 ID，不延长节点寿命。
+	GdObj gid = 0; // 绑定对应的 Go UI 对象 ID。
+	SpxUiBindingListener *listener = nullptr; // 借用的 SpxUiMgr 接口，detach 后必须清空。
 
 	void _notification(int p_what);
 	void _on_pressed();
+	// 将 pressed 回调置于已有连接之前，使 Go 回调发生在场景脚本可能销毁节点之前。
 	Error _connect_pressed_first(Control *p_control);
 
 public:

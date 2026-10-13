@@ -24,21 +24,28 @@ import (
 )
 
 type InputFrame struct {
-	Point                  mathf.Vec2
-	LeftButtonPressed      bool
-	MouseEvents            []engine.MouseEvent
-	KeyEvents              []engine.KeyEvent
+	// Point 是本 tick 的有效鼠标位置；录制时来自现场，回放时来自记录。
+	Point mathf.Vec2
+	// LeftButtonPressed 是采样结束时的左键按住状态，用于校验边沿流并兼容旧回放。
+	LeftButtonPressed bool
+	// MouseEvents 和 KeyEvents 保留同一 tick 内按原顺序到达的按下/抬起边沿。
+	MouseEvents []engine.MouseEvent
+	KeyEvents   []engine.KeyEvent
+	// MouseMovementThreshold 控制位置变化何时生成高层移动事件。
 	MouseMovementThreshold float64
 }
 
 // InputFrameState is the consumer-local history used to normalize input
 // snapshots and ordered edges into one stream of input events.
 type InputFrameState struct {
+	// lastMousePos 和 leftButtonPressed 只属于当前消费者；实时循环和输入会话
+	// 各自持有状态，切换所有权时通过 Reset 对齐，避免制造跨会话边沿。
 	lastMousePos      mathf.Vec2
 	leftButtonPressed bool
 }
 
 type InputFrameHooks struct {
+	// 点击、移动和按键钩子把归一化输入转换成 Game 层事件或即时状态更新。
 	FireLeftButtonDown func(mathf.Vec2)
 	FireLeftButtonUp   func(mathf.Vec2)
 	OnMouseMove        func(mathf.Vec2)
@@ -47,18 +54,26 @@ type InputFrameHooks struct {
 
 type InputLoopConfig struct {
 	InputFrameHooks
-	BeginFrame             func() bool
-	CurrentMousePos        func() mathf.Vec2
-	SetMousePos            func(mathf.Vec2)
-	GetMouseInput          func([]engine.MouseEvent) ([]engine.MouseEvent, uint8)
-	GetKeyEvents           func([]engine.KeyEvent) []engine.KeyEvent
+	// BeginFrame 返回 false 表示本轮输入由录制/回放会话接管；实时循环只等待下一帧。
+	BeginFrame func() bool
+	// CurrentMousePos 返回本轮位置；SetMousePos 更新 Game.inputMgr 的即时查询缓存。
+	CurrentMousePos func() mathf.Vec2
+	SetMousePos     func(mathf.Vec2)
+	// GetMouseInput 同时取走有序按钮边沿和采样时的按住位图。
+	GetMouseInput func([]engine.MouseEvent) ([]engine.MouseEvent, uint8)
+	// GetKeyEvents 取走有序键盘边沿；当前高层 API 只对按下边沿触发 OnKey。
+	GetKeyEvents func([]engine.KeyEvent) []engine.KeyEvent
+	// 位移任一轴超过该阈值时才调用 OnMouseMove。
 	MouseMovementThreshold float64
 }
 
 type inputLoopState struct {
-	frameState   InputFrameState
-	mouseEvents  []engine.MouseEvent
-	keyEvents    []engine.KeyEvent
+	// frameState 保存实时消费者的跨帧派生状态。
+	frameState InputFrameState
+	// 临时切片跨帧复用，避免输入循环每帧分配。
+	mouseEvents []engine.MouseEvent
+	keyEvents   []engine.KeyEvent
+	// 输入会话接管后置位；恢复实时输入时只同步现状，不补发会话期间的变化。
 	wasSuspended bool
 }
 
@@ -76,6 +91,8 @@ func (s *InputFrameState) Reset(point mathf.Vec2, leftButtonPressed bool) {
 	*s = InputFrameState{lastMousePos: point, leftButtonPressed: leftButtonPressed}
 }
 
+// Process 将同一 tick 的有序边沿、最终按住状态和鼠标位置归一化为高层事件。
+// 边沿优先保持同帧内的真实顺序；最终状态用于旧回放兼容和平台漏报保护。
 func (s *InputFrameState) Process(frame InputFrame, hooks InputFrameHooks) {
 	leftPressed := s.leftButtonPressed
 	for _, event := range frame.MouseEvents {
@@ -120,6 +137,7 @@ func RunInputLoop(cfg InputLoopConfig) {
 
 	for {
 		if cfg.BeginFrame != nil && !cfg.BeginFrame() {
+			// 暂停期间由输入会话消费 ready 队列；实时消费者恢复时必须重新对齐。
 			state.wasSuspended = true
 			engine.WaitNextFrame()
 			continue
@@ -130,6 +148,7 @@ func RunInputLoop(cfg InputLoopConfig) {
 }
 
 func ProcessLogicFrame[T any](cfg LogicFrameConfig[T]) ([]string, []string) {
+	// 音频与动画完成队列按舞台 Shape 顺序清理，临时切片由调用方跨帧复用。
 	tempAudios := cfg.TempAudios
 	for _, item := range cfg.Items {
 		tempAudios = cfg.FlushPendingAudio(item, tempAudios)
@@ -141,6 +160,7 @@ func ProcessLogicFrame[T any](cfg LogicFrameConfig[T]) ([]string, []string) {
 	}
 
 	for {
+		// 一帧内取尽已经到期的逻辑计时器，并把每个时间戳转换成 Game 事件。
 		targetTimer, ok := cfg.NextTimer()
 		if !ok {
 			break
@@ -151,20 +171,23 @@ func ProcessLogicFrame[T any](cfg LogicFrameConfig[T]) ([]string, []string) {
 }
 
 func runInputLoopFrame(cfg InputLoopConfig, state *inputLoopState) {
+	// 位置查询与按键/鼠标 ready 队列属于同一引擎帧快照。
 	point := cfg.CurrentMousePos()
-	// Keep the cached mouse position in sync with the engine every frame,
-	// so callers don't need a second engine-side mouse query elsewhere.
+	// 每帧都刷新查询缓存；高层感知 API 无需再次跨边界读取引擎坐标。
 	cfg.SetMousePos(point)
 	var buttons uint8
+	// 两个 drain 都复用调用方切片，并在返回时清空各自的 ready 队列。
 	state.mouseEvents, buttons = cfg.GetMouseInput(state.mouseEvents[:0])
 	state.keyEvents = cfg.GetKeyEvents(state.keyEvents[:0])
 	leftButtonPressed := buttons&1 != 0
 	if state.wasSuspended {
-		// The suspended consumer owns all edges. Resume from the current held
-		// state without manufacturing events at the handoff boundary.
+		// 暂停消费者拥有期间的全部边沿。恢复时仅同步位置和按住状态，
+		// 不把会话边界伪造成点击或移动。
 		state.frameState.Reset(point, leftButtonPressed)
 		state.wasSuspended = false
 	} else {
+		// InputFrameState 先按顺序派发鼠标边沿，再用最终按住状态校验，
+		// 随后处理移动与键盘按下事件。
 		state.frameState.Process(
 			InputFrame{
 				Point:                  point,

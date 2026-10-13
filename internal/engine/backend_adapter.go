@@ -57,6 +57,11 @@ func NewBackdropProxy(obj any, path string, renderScale float64) *Sprite {
 	})
 }
 
+// BridgeNewBareSprite 创建 Go 侧同步代理，并通过 SpriteMgr 在 Godot 场景树中新建裸精灵。
+//
+// 直接调用方：根包 SpriteImpl.ensureProxyInitialized；总体流程调用方：项目精灵加载和
+// 运行时 Clone。obj 会保存到 Sprite.Target，供 Godot 事件按对象 ID 回到业务对象。
+// 调用者必须处于 Godot 主线程；克隆流程由 rebuildRuntimeProxy 的 WaitMainThread 保证。
 func BridgeNewBareSprite(obj any, pos Vec2) *Sprite {
 	syncSprite := CreateBareSpriteForType[Sprite](pos)
 	syncSprite.Target = obj

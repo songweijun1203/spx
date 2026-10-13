@@ -31,6 +31,8 @@
 #ifndef SPX_MOVIE_UTILS_H
 #define SPX_MOVIE_UTILS_H
 
+// 录制模块统一的详细日志开关查询。
+// 直接调用方：各 writer/recorder；顶层来源：Godot OS 的 verbose stdout 配置。
 class MovieDebugUtils {
 public:
 	static bool is_stdout_verbose();

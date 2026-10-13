@@ -39,7 +39,7 @@ type ProjectFontFamily struct {
 	Faces []ProjectFontFace
 }
 
-// ProjectFontFace stores a resolved face; each family currently permits one regular face.
+// ProjectFontFace 保存归一化后的字体文件路径；当前每个字体族只允许一个常规字形文件。
 type ProjectFontFace struct {
 	Path string
 }
@@ -61,6 +61,9 @@ type projectFontCatalog interface {
 	projectFontFamilyNames() (names []string, available bool)
 }
 
+// LoadProjectFonts 扫描 fonts/<family>/index.json，校验每个字体文件确实可访问，
+// 再把项目中的字体优先级解析为规范字体族名。这里只构建并校验配置；真正向 Godot
+// Theme 安装字体由 loadGame 后续的 ApplyProjectFonts 一次性完成。
 func LoadProjectFonts(fs spxfs.Dir, preferences []string) (ProjectFonts, error) {
 	families, err := loadProjectFontFamilies(fs)
 	if err != nil {
@@ -165,9 +168,8 @@ func verifyFontFace(fs spxfs.Dir, facePath string) error {
 	if err == nil {
 		return file.Close()
 	}
-	// The Web interpreter receives source and JSON files only. Font binaries
-	// live in Godot's mounted project data, so retry the same logical asset path
-	// through the engine after the interpreter filesystem misses it.
+	// Web 解释器文件系统可能只有源码和 JSON，字体二进制仍在 Godot 挂载的项目数据中；
+	// 因此普通 FS 查找失败后，再用同一逻辑资源路径经引擎验证一次。
 	if hasAssetDir {
 		if engineErr := verifyFontFaceInEngine(assetDir, facePath); engineErr == nil {
 			return nil

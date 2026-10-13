@@ -25,13 +25,15 @@ import (
 	itime "github.com/goplus/spx/v3/internal/time"
 )
 
+// updateState 是一次 Update 调用内固定的帧快照和两类时间预算。
 type updateState struct {
-	frame            int64
-	levelTime        float64
-	watchdogDeadline stime.Time
-	workDeadline     stime.Time
+	frame            int64      // 进入 Update 时的逻辑帧号。
+	levelTime        float64    // 进入 Update 时的关卡时间。
+	watchdogDeadline stime.Time // 整个 Update 最长一秒的保护截止点。
+	workDeadline     stime.Time // 当前帧允许额外脚本轮次的较短预算。
 }
 
+// updateAction 表示主循环下一步是处理任务、等待后重试，还是结束当前 Update。
 type updateAction uint8
 
 const (
@@ -39,10 +41,14 @@ const (
 	updateRetry
 	updateComplete
 
-	updateWatchdogTimeout = stime.Second
+	updateWatchdogTimeout = stime.Second // 防止单次引擎回调长期卡在调度器中。
 )
 
-// Update processes queued wait jobs and resumes eligible coroutines.
+// Update 消费到期 WaitJob，恢复符合条件的 Thread，并等待它们再次让出或结束。
+//
+// 直接调用方：internal/engine.onUpdate 的 CoroUpdateJobs 阶段；总体流程调用方：Godot
+// 每帧 update 回调。返回时 runnableThreads 中已经没有未取消 Thread，也没有当前帧
+// 可处理任务；仍在等待未来帧、时间或外部通道的 Thread 可以继续处于挂起状态。
 func (p *Coroutines) Update() {
 	start := stime.Now()
 	gcStatsBefore := p.readGCStatsBeforeUpdate()
@@ -56,6 +62,7 @@ func (p *Coroutines) Update() {
 	p.statsMu.Unlock()
 }
 
+// readGCStatsBeforeUpdate 在性能调试开启时取得 GC 基线，关闭时避免额外运行时开销。
 func (p *Coroutines) readGCStatsBeforeUpdate() *sdebug.GCStats {
 	if !p.perfDebug.Load() {
 		return nil
@@ -65,6 +72,9 @@ func (p *Coroutines) readGCStatsBeforeUpdate() *sdebug.GCStats {
 	return stats
 }
 
+// beginUpdate 固定本轮帧号、关卡时间和两个墙钟截止点；循环过程中不会重新采样
+// 逻辑时间。workDeadline 是 Forever 同帧多轮调度的正常预算，watchdogDeadline 是
+// 防止整个 Update 异常久占主线程的最后保护，两者用途不同。
 func (p *Coroutines) beginUpdate() (UpdateJobsStats, updateState) {
 	start := stime.Now()
 	state := updateState{
@@ -76,6 +86,11 @@ func (p *Coroutines) beginUpdate() (UpdateJobsStats, updateState) {
 	return UpdateJobsStats{InitTime: elapsedMillis(start)}, state
 }
 
+// runUpdateLoop 持续处理任务，必要时开启同帧额外脚本轮次，并在结束时归并延期任务。
+//
+// currentJobs 暂时为空且没有 runnable Thread 时，nextUpdateAction 返回 updateComplete。
+// 此时并不一定真的结束：queueNextScriptRound 会检查 roundJobs、重绘标记和工作预算。
+// 允许继续就把 roundJobs 放回 currentJobs；不允许继续才退出循环并留到下一帧。
 func (p *Coroutines) runUpdateLoop(stats *UpdateJobsStats, state *updateState) {
 	start := stime.Now()
 	iterations := 0
@@ -85,6 +100,7 @@ updateLoop:
 		iterations++
 		switch p.nextUpdateAction(stats) {
 		case updateComplete:
+			// 普通 Forever 的同帧加速决策只发生在完整 script round 的边界。
 			if p.queueNextScriptRound(state) {
 				continue
 			}
@@ -95,8 +111,7 @@ updateLoop:
 		}
 
 		if !p.updateWatchdogNow().Before(state.watchdogDeadline) {
-			// A slow frame is not necessarily a runaway script. Leave queued work
-			// for the next Update without canceling scripts or waiting for cleanup.
+			// 慢帧不等于脚本死循环：保留剩余任务给下一帧，不取消脚本，也不等待清理。
 			log.Warn("engine update exceeded 1 second - deferring remaining work to next frame (waitMainCount=%d)", stats.WaitMainCount)
 			break updateLoop
 		}
@@ -107,12 +122,16 @@ updateLoop:
 	p.promoteDeferredJobs(stats)
 }
 
+// nextUpdateAction 在 schedulerMu 下原子观察队首任务和 runnableThreads。
+//
+// 只要还有可运行脚本，Update 就在 schedulerCond 上等待它 Yield/结束；主线程任务例外，
+// 因为脚本可能正持有 runMu 等待该任务完成，必须优先执行才能解除依赖。
 func (p *Coroutines) nextUpdateAction(stats *UpdateJobsStats) updateAction {
 	start := stime.Now()
 	action := updateProcessJob
 	p.schedulerMu.Lock()
 	job, queued := p.currentJobs.PeekFront()
-	// Service engine calls before waiting for scripts, including startup, to yield.
+	// 即使脚本尚未 Yield，也要优先服务引擎主线程调用，否则双方会互相等待。
 	if (!queued || job.Type != waitTypeMainThread) && p.hasRunnableThreadLocked() {
 		p.schedulerCond.Wait()
 		action = updateRetry
@@ -124,6 +143,7 @@ func (p *Coroutines) nextUpdateAction(stats *UpdateJobsStats) updateAction {
 	return action
 }
 
+// processNextWaitJob 从本轮队列取出一个任务，更新统计并按类型判断是否到期。
 func (p *Coroutines) processNextWaitJob(state *updateState, stats *UpdateJobsStats) {
 	start := stime.Now()
 	job := p.currentJobs.PopFront()
@@ -132,6 +152,7 @@ func (p *Coroutines) processNextWaitJob(state *updateState, stats *UpdateJobsSta
 	stats.TaskProcessing += elapsedMillis(start)
 }
 
+// processWaitJob 按等待类型选择“本轮恢复”“同帧下一轮候选”或“延期到后续帧”。
 func (p *Coroutines) processWaitJob(state *updateState, stats *UpdateJobsStats, job *WaitJob) {
 	if job.Th != nil && p.isThreadCanceled(job.Th) {
 		return
@@ -139,12 +160,16 @@ func (p *Coroutines) processWaitJob(state *updateState, stats *UpdateJobsStats, 
 
 	switch job.Type {
 	case waitTypeLoop, waitTypeNextRound:
+		// 旧帧遗留任务已经至少跨过一帧，可以直接恢复。当前帧刚 Yield 出来的任务
+		// 不能在这里立刻恢复，否则一个 Forever 会独占队列；先集中到 roundJobs，
+		// 等本轮所有 runnable 脚本都让出后，再统一决定同帧续跑还是延期。
 		if job.Frame < state.frame {
 			p.runWaitJob(job)
 		} else {
 			p.roundJobs.PushBack(job)
 		}
 	case waitTypeFrame:
+		// WaitNextFrame 至少跨过一个 frame，创建帧仍相同时不能恢复。
 		if job.Frame >= state.frame {
 			p.deferredJobs.PushBack(job)
 		} else {
@@ -152,19 +177,23 @@ func (p *Coroutines) processWaitJob(state *updateState, stats *UpdateJobsStats, 
 			stats.WaitFrameCount++
 		}
 	case waitTypeTime:
+		// 时间等待同时要求跨过创建帧，避免 Wait(0) 在当前脚本轮次立即重入。
 		if job.Frame >= state.frame || job.Time > state.levelTime {
 			p.deferredJobs.PushBack(job)
 		} else {
 			p.runWaitJob(job)
 		}
 	case waitTypeYield:
+		// 纯 Yield 已经被允许进入本轮，直接恢复。
 		p.runWaitJob(job)
 	case waitTypeMainThread:
+		// 主线程任务的 Call 内部负责把结果交还等待方；不走 Resume(Thread)。
 		job.Call()
 		stats.WaitMainCount++
 	}
 }
 
+// runWaitJob 执行任务回调；普通等待没有 Call，直接把关联 Thread 标为 runnable 并唤醒。
 func (p *Coroutines) runWaitJob(job *WaitJob) {
 	if job.Call != nil {
 		job.Call()
@@ -173,10 +202,15 @@ func (p *Coroutines) runWaitJob(job *WaitJob) {
 	}
 }
 
+// promoteDeferredJobs 在 Update 结束时把未获准同帧恢复的 roundJobs 合入后续任务。
+// 这正是 Forever 因“请求重绘”或“预算耗尽”而等待下一引擎帧的落点：任务并未丢失
+// 或停止，而是经稳定排序后移回 currentJobs，留给下一次 gco.Update 检查。
+//
+// 事件处理器重启可继承 resumeOrder，所以这里不能简单按新 Thread ID 排序。
 func (p *Coroutines) promoteDeferredJobs(stats *UpdateJobsStats) {
 	start := stime.Now()
 	p.deferredJobs.Move(p.roundJobs)
-	// Deferred waits retain script order, including restarted handlers.
+	// 延期等待保留脚本顺序，包括继承旧排序位置的重启事件处理器。
 	p.deferredJobs.SortStable(func(a, b *WaitJob) int {
 		return cmp.Compare(a.threadOrder(), b.threadOrder())
 	})
@@ -185,6 +219,7 @@ func (p *Coroutines) promoteDeferredJobs(stats *UpdateJobsStats) {
 	stats.MoveTime = elapsedMillis(start)
 }
 
+// finishUpdate 汇总可选 GC 差值和无法细分到调度阶段的外部耗时。
 func (p *Coroutines) finishUpdate(stats *UpdateJobsStats, start stime.Time, before *sdebug.GCStats) {
 	if before != nil {
 		var after sdebug.GCStats
@@ -199,6 +234,7 @@ func (p *Coroutines) finishUpdate(stats *UpdateJobsStats, start stime.Time, befo
 	stats.ExternalTime = total - accounted
 }
 
+// elapsedMillis 返回从 start 至今的毫秒数，供 UpdateJobsStats 使用。
 func elapsedMillis(start stime.Time) float64 {
 	return stime.Since(start).Seconds() * 1000
 }

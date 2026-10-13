@@ -45,12 +45,15 @@ var (
 
 // TimingInfo records the execution time and related information of each module
 type TimingInfo struct {
-	PreCall    float64       // Preparation time before the call
-	ActualCall float64       // Actual function execution time
-	PostCall   float64       // Cleanup time after the call
-	GCStats    debug.GCStats // GC statistics
+	PreCall    float64       // 调用前准备阶段耗时（毫秒）
+	ActualCall float64       // 被测函数实际执行耗时（毫秒）
+	PostCall   float64       // 调用后清理和统计阶段耗时（毫秒）
+	GCStats    debug.GCStats // 被测阶段期间的 Go GC 统计差异
 }
 
+// Calcfps 根据引擎帧计数和真实时间计算近似 FPS。
+// 它只在时间间隔超过 0.5 秒时刷新结果，避免每帧抖动；onUpdate 将结果
+// 传给 itime.Update，供逻辑时间和调试信息使用。
 func Calcfps() float64 {
 	curTime := time.RealTimeSinceStart()
 	curFrame := time.Frame()
@@ -87,6 +90,8 @@ func Restore() {
 	enabledStack = enabledStack[:len(enabledStack)-1]
 }
 
+// BeginSample 开始记录一个性能样本，通常对应一帧 onUpdate。
+// Enabled 未开启时不做任何计时；开启后会清空上一帧的阶段数据并记录起始时间。
 func BeginSample(sampleName ...string) {
 	if !Enabled {
 		return
@@ -102,6 +107,8 @@ func BeginSample(sampleName ...string) {
 	clear(timingData)
 }
 
+// EndSample 结束性能样本，汇总本帧总耗时，并在超出阈值或开启详细调试时
+// 输出 GameUpdate、CoroUpdateJobs、GameRender 及协程/GC 统计。
 func EndSample(sampleName ...string) {
 	if !Enabled {
 		return
@@ -152,7 +159,9 @@ func GetStats(name string) (TimingInfo, bool) {
 	return info, ok
 }
 
-// MeasureFunctionTime measures function execution time, including preparation and cleanup
+// MeasureFunctionTime 包装一个阶段函数，分别统计准备、实际执行和清理耗时，
+// 同时记录该阶段期间的 GC 差异，并把结果保存到 timingData[name]。
+// profiler 未启用且 Debug 未开启时只执行 fn，不增加计时开销。
 func MeasureFunctionTime(name string, fn func()) {
 	if !Enabled && !Debug {
 		fn()

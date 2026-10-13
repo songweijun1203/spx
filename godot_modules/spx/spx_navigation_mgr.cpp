@@ -31,12 +31,15 @@
 #include "spx_navigation_mgr.h"
 
 void SpxNavigationMgr::on_reset(int reset_code) {
+	// 直接调用方：SpxEngine::_notify_managers(on_reset)；顶层为 Go 游戏重置/场景重载。
 	if (path_finder.is_valid()) {
 		path_finder->reset();
 		path_finder = nullptr;
 	}
 }
 void SpxNavigationMgr::setup_path_finder_with_size(GdVec2 grid_size, GdVec2 cell_size, GdBool with_jump, GdBool with_debug) {
+	// 直接调用方：生成的 navigation ABI；顶层为 Go SetupPathFinderWithSize。
+	// Ref::instantiate 按 Godot 引用计数规则拥有对象，不需要手工 delete。
 	if (path_finder.is_null() || !path_finder.is_valid()) {
 		path_finder.instantiate();
 		path_finder->setup_spx(grid_size, cell_size, with_debug);
@@ -49,12 +52,15 @@ void SpxNavigationMgr::setup_path_finder(GdBool with_jump) {
 }
 
 void SpxNavigationMgr::set_obstacle(GdObj obj, GdBool enabled) {
+	// 只更新已存在的网格，避免单次障碍标记隐式扫描整个场景。
 	if (path_finder.is_valid()) {
 		path_finder->set_sprite_obstacle(obj, enabled);
 	}
 }
 
 GdArray SpxNavigationMgr::find_path(GdVec2 p_from, GdVec2 p_to, GdBool with_jump) {
+	// 直接调用方：生成的 navigation ABI；顶层为 Go NavigationMgr.FindPath。
+	// 首次查询按需初始化，扫描静态碰撞体和 TileMap 障碍。
 	if (path_finder.is_null() || !path_finder.is_valid()) {
 		setup_path_finder(with_jump);
 	}

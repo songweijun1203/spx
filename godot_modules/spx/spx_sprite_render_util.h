@@ -35,9 +35,8 @@
 #include "scene/resources/atlas_texture.h"
 #include "scene/resources/sprite_frames.h"
 
-// RenderRoot owns the costume center offset. In single-image mode the animation
-// node inherits it directly; multi-frame animations cancel it before applying
-// their own frame metadata so the final placement remains unchanged.
+// RenderRoot 持有服装中心偏移。单图模式由动画节点直接继承；多帧动画先抵消该偏移，
+// 再应用逐帧元数据，使最终位置保持一致。直接调用方是 SpxSprite 渲染/动画实现。
 static inline Vector2 spx_compute_anim_offset(bool p_is_single_image_mode, const Vector2 &p_base_offset, const Vector2 &p_render_offset, const Vector2 &p_frame_offset, const Vector2 &p_render_scale) {
 	Vector2 final_offset = p_base_offset + (p_frame_offset * p_render_scale);
 	if (!p_is_single_image_mode) {
@@ -46,8 +45,8 @@ static inline Vector2 spx_compute_anim_offset(bool p_is_single_image_mode, const
 	return final_offset;
 }
 
-// SpriteFrames stores loop in the resource. Give each player only the selected
-// clip's metadata; copying Ref<Texture2D> keeps image storage shared.
+// Godot 的 SpriteFrames 把 loop 存在资源上；为每个播放器复制所选片段的元数据，
+// 但复制 Ref<Texture2D> 继续共享图像存储，避免一个精灵改循环状态影响另一个精灵。
 static inline Ref<SpriteFrames>
 spx_copy_animation_frames(const Ref<SpriteFrames> &p_frames,
 		const StringName &p_animation) {
@@ -68,9 +67,8 @@ spx_copy_animation_frames(const Ref<SpriteFrames> &p_frames,
 	return frames;
 }
 
-// Returns the normalized atlas region for an animation frame. This is SPX
-// rendering policy, so keep it in the module instead of extending
-// AnimatedSprite2D's core API.
+// 返回动画帧的归一化图集区域。它属于 SPX Shader 渲染策略，因此留在模块内，
+// 不扩展 Godot AnimatedSprite2D 核心 API。
 static inline Rect2 spx_get_animation_frame_uv_rect(const Ref<SpriteFrames> &p_frames, const StringName &p_animation, int p_frame) {
 	const Rect2 default_uv(0, 0, 1, 1);
 	if (p_frames.is_null() || !p_frames->has_animation(p_animation) ||

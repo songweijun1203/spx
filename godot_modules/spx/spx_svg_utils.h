@@ -34,26 +34,26 @@
 #include "core/string/ustring.h"
 #include "core/templates/vector.h"
 
+// 一张供 LunaSVG 使用的项目字体面；字节由快照持有，不依赖外部文件寿命。
 struct SpxSvgProjectFontFace {
-	String family;
-	Vector<uint8_t> data;
+	String family; // CSS font-family 原始名称。
+	Vector<uint8_t> data; // 完整字体文件字节，发布时复制进进程级注册表。
 };
 
+// LunaSVG 字体注册桥：维护进程级不可分割快照，并在各渲染线程惰性安装本地字体表。
+// 直接调用方是 SpxResMgr 字体提交和 SVG 加载器；顶层调用方是 Go 项目字体初始化。
+// LunaSVG 的字体注册是线程局部的，因此每个实际渲染线程都必须调用 ensure_*。
 class SpxSvgUtils {
 public:
-	// Validates the same font bytes LunaSVG will consume without changing the
-	// current thread's face cache or the process-wide project font registry.
+	// 用 LunaSVG 相同解析路径校验字体字节，但不修改当前线程缓存或进程级项目字体表。
 	static bool is_font_data_valid(const Vector<uint8_t> &font_data);
-	// Atomically replaces the complete project font snapshot. Rendering threads
-	// see either the previous generation or this complete generation; they never
-	// observe individual faces being registered.
+	// 原子替换完整项目字体快照；渲染线程只会看到旧代或完整新代，不会看到逐张注册的中间态。
 	static void apply_font_registry(const Vector<uint8_t> &default_font_data, const Vector<SpxSvgProjectFontFace> &named_font_faces, const Vector<String> &preferences);
 	static void set_default_font(const void *font_data, int length);
 	static void add_font_face(const String &family, const void *font_data, int length);
 	static void set_font_preferences(const Vector<String> &preferences);
 	static void reset_font_registry();
-	// Returns false when the complete thread-local snapshot could not be
-	// installed. Callers must not render with a partial font generation.
+	// 当前线程无法完整安装快照时返回 false；调用方不得使用部分字体代继续渲染。
 	static bool ensure_font_faces_registered();
 };
 

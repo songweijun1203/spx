@@ -38,17 +38,23 @@
 #include "spx_audio.h"
 #include "spx_object_mgr.h"
 
+// SPX 音频服务入口，管理逻辑音频对象、全局播放 aid 以及 Audio Bus 池。
+// 直接调用方：生成的 spx_audio_* ABI 包装和 SpxEngine 生命周期分发；
+// 顶层调用方：Go gdengine.AudioMgr，以及 Game/Sprite 的声音 API。
+// SpxObjectMgr 中的对象表和本类路由表均限定在 Godot 主线程访问。
 class SpxAudioMgr : public SpxObjectMgr<SpxAudio> {
 
 private:
-	// Main-thread-only routing index. Player state lives solely in SpxAudio.
+	// 播放 aid 到逻辑音频对象 GdObj 的主线程路由；播放器状态只保存在 SpxAudio。
 	HashMap<GdInt, GdObj> aid_owners;
+	// 单调递增的播放句柄生成器；reset 不回退，避免旧 aid 误命中新播放。
 	GdInt g_audio_id = 0;
 
 	SpxAudio *_get_aid_audio(GdInt aid);
 
 public:
-
+	// 直接调用方：SpxEngine::_notify_managers；顶层来源：Godot 启动、帧循环、
+	// Go 重置/结束游戏。所有 Node 和 AudioServer 操作必须留在 Godot 主线程。
 	void on_awake() override;
 	void on_destroy() override;
 	void on_update(float delta) override;
@@ -65,7 +71,8 @@ public:
 	SPX_BIND void set_volume(GdObj obj, GdFloat volume);
 	SPX_BIND GdFloat get_volume(GdObj obj);
 
-	// play audio and return the audioid
+	// 播放并返回 aid。直接调用方：ABI；顶层调用方：Go AudioMgr.Play*。
+	// owner_id=-1 时挂到相机，其他值尝试挂到精灵，形成 Godot 2D 空间音效。
 	SPX_BIND GdInt play_with_attenuation(GdObj obj, GdString path, GdObj owner_id, GdFloat attenuation, GdFloat max_distance);
 	SPX_BIND GdInt play(GdObj obj, GdString path);
 	SPX_BIND void pause(GdInt aid);

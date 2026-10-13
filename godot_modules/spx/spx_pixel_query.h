@@ -38,31 +38,33 @@
 
 namespace SpxPixelQuery {
 
-// Per-query values and strong resource references, with no manager or sprite
-// ownership. Images are fetched lazily, only after the world bounds overlap.
+// 单次像素查询快照：保存当前帧纹理、世界变换和采样参数，不拥有 Manager 或节点。
+// 图像只在包围盒相交后惰性读取，Godot Ref 保证查询期间资源存活。
 struct Snapshot {
-	Ref<Texture2D> texture;
-	Ref<Image> image;
-	Rect2 bounds;
-	Rect2 local_rect;
-	Transform2D inverse_transform;
-	Vector2i image_size;
-	real_t collision_alpha_scale = 1.0f;
-	bool flip_h = false;
-	bool flip_v = false;
-	// Transparent render targets store premultiplied RGB, unlike costume images.
-	bool image_premultiplied = false;
+	Ref<Texture2D> texture; // 当前动画帧纹理。
+	Ref<Image> image; // 惰性取得的 CPU 像素。
+	Rect2 bounds; // 全局变换后的世界轴对齐包围盒。
+	Rect2 local_rect; // 考虑 centered/offset 后的局部矩形。
+	Transform2D inverse_transform; // 世界坐标到局部坐标的逆变换。
+	Vector2i image_size; // CPU 图像尺寸，加载前暂取纹理尺寸。
+	real_t collision_alpha_scale = 1.0f; // 幽灵等效果对碰撞 alpha 的缩放。
+	bool flip_h = false; // 水平镜像采样。
+	bool flip_v = false; // 垂直镜像采样。
+	bool image_premultiplied = false; // 渲染目标为预乘 RGB，普通服装不是。
 };
 
 struct ImageEntry {
-	// Keeps pointer keys alive for this pass.
+	// texture 让作为哈希 key 的裸指针在本轮查询期间保持有效。
 	Ref<Texture2D> texture;
 	Ref<Image> image;
+	// SpxImageTexture 内容版本变化时，即使对象指针相同也必须重新取图。
 	uint64_t version;
 };
 
+// 一次场景颜色/像素碰撞操作内共享的 CPU 图像缓存，不跨查询长期持有。
 using ImageCache = std::unordered_map<const Texture2D *, ImageEntry>;
 
+// 可参与场景颜色合成的一层；按 z、舞台类别和场景树顺序判定前后关系。
 struct Layer {
 	enum Order {
 		BACKDROP,
@@ -70,10 +72,10 @@ struct Layer {
 		SPRITE,
 	};
 
-	Snapshot pixel_query;
-	int z_index = 0;
-	Order order = SPRITE;
-	int tree_index = 0;
+	Snapshot pixel_query; // 本层的像素查询快照及资源强引用。
+	int z_index = 0; // Godot CanvasItem z_index，数值越大越靠前。
+	Order order = SPRITE; // 同 z 时的 SPX 舞台绘制顺序。
+	int tree_index = 0; // 同类型同 z 时的场景树顺序，越后越靠前。
 	bool in_front_of(const Layer &p_other) const;
 };
 
@@ -101,13 +103,12 @@ bool any_pixel_center(const Rect2i &p_rect, int p_step, const Predicate &p_match
 	return false;
 }
 
-// load_image must succeed first. Apply inverse transform, pivot/centering and
-// texture flips before flooring; this also preserves negative-scale behavior.
+// 调用前 load_image 必须成功。先应用逆变换、轴心/居中和翻转，再向下取整，
+// 从而保留负缩放精灵的正确采样行为。
 bool sample(const Snapshot &p_snapshot, const Vector2 &p_world_pos, Color &r_color);
 bool sample_premultiplied(const Snapshot &p_snapshot, const Vector2 &p_world_pos, Color &r_color);
 
-// Layers arrive front-to-back (descending z, stage order, then tree index).
-// Scratch composites their premultiplied colors over a white clear color.
+// 输入层按前到后排列（z、舞台顺序、树索引均降序）；按 Scratch 规则将预乘色叠到白底。
 Color composite(const std::vector<Layer> &p_layers, const Vector2 &p_world_pos);
 
 } // namespace SpxPixelQuery

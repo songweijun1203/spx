@@ -46,6 +46,8 @@
 #include <limits>
 
 void SpxPathFinder::_bind_methods() {
+	// 直接调用方：Godot ClassDB 类型注册；顶层来源：模块初始化。
+	// D_METHOD 名称构成 Godot 脚本/反射 API，修改时需同步调用方。
 	ClassDB::bind_method(D_METHOD("setup_grid", "size", "cell_size", "with_debug"), &SpxPathFinder::setup);
 	ClassDB::bind_method(D_METHOD("add_all_obstacles", "root"), &SpxPathFinder::add_all_obstacles);
 	ClassDB::bind_method(D_METHOD("find_path", "start", "end"), &SpxPathFinder::find_path);
@@ -57,11 +59,13 @@ void SpxPathFinder::_bind_methods() {
 }
 
 SpxPathFinder::SpxPathFinder() {
+	// Godot Resource/RefCounted 必须 instantiate 后才能调用；Ref 自动持有引用。
 	astar.instantiate();
 }
 
 SpxPathFinder::~SpxPathFinder() {
 	if (drawer) {
+		// drawer 是 Node，场景树拥有；析构时只能请求 queue_free，不能 memdelete。
 		drawer->queue_free();
 		drawer = nullptr;
 	}
@@ -72,6 +76,7 @@ void SpxPathFinder::setup_spx(GdVec2 grid_size, GdVec2 cell_size, GdBool with_de
 }
 
 void SpxPathFinder::setup(Vector2i grid_size, Vector2i cell_size, bool with_debug) {
+	// 直接调用方：setup_spx 或 ClassDB 脚本接口；顶层为 Go 寻路初始化/调试脚本。
 	cached_cell_size = cell_size;
 	Node *root = nullptr;
 
@@ -80,6 +85,7 @@ void SpxPathFinder::setup(Vector2i grid_size, Vector2i cell_size, bool with_debu
 	}
 
 	if (!root) {
+		// 非 SPX 宿主使用时退回 Godot 当前场景，保留 ClassDB 独立调用能力。
 		root = SceneTree::get_singleton()->get_current_scene();
 	}
 
@@ -100,6 +106,7 @@ void SpxPathFinder::set_jumping_enabled(bool p_enabled) {
 }
 
 void SpxPathFinder::add_all_obstacles(Node *root) {
+	// 场景树遍历必须在 Godot 主线程进行；这里只读取当前已入树的静态节点快照。
 	if (!root) {
 		return;
 	}
@@ -134,6 +141,7 @@ void SpxPathFinder::set_sprite_obstacle(GdObj obj, bool enabled) {
 }
 
 GdArray SpxPathFinder::find_path_spx(GdVec2 p_from, GdVec2 p_to) {
+	// 直接调用方：SpxNavigationMgr::find_path；顶层为 Go NavigationMgr.FindPath。
 	auto path_points = find_path(spx_to_godot_vec2(p_from), spx_to_godot_vec2(p_to));
 	auto count = path_points.size();
 	if (count < 0 || count > std::numeric_limits<int32_t>::max() / 2) {
@@ -232,6 +240,7 @@ void SpxPathFinder::_setup_astar(Node *root, Vector2i &grid_size, Vector2i &cell
 	astar->set_region({ final_grid_pos, final_grid_size });
 	astar->set_cell_size(cell_size);
 	astar->set_diagonal_mode(AStarGrid2D::DIAGONAL_MODE_NEVER);
+	// Godot 规则：修改 AStarGrid2D region/cell_size 后必须 update 才能查询路径。
 	astar->update();
 }
 
@@ -271,7 +280,7 @@ void SpxPathFinder::_process_rectangle_shape(Node2D *owner, CollisionShape2D *sh
 
 	for (int x = start.x; x <= end.x; x++) {
 		for (int y = start.y; y <= end.y; y++) {
-			// Now assume no rotation, otherwise use Geometry2D::is_point_in_polygon
+			// 当前矩形路径按轴对齐包围范围占格；若要精确支持旋转需改用多边形判定。
 			astar->set_point_solid(Vector2i(x, y), add);
 		}
 	}
@@ -383,17 +392,20 @@ Rect2 SpxPathFinder::_get_scene_bounds(Node *node) {
 
 void SpxPathFinder::_destroy_drawer() {
 	if (drawer) {
+		// queue_free 是延迟删除；先清空反向指针，避免同一帧重复安排释放。
 		drawer->queue_free();
 		drawer = nullptr;
 	}
 }
 
 void PathDebugDrawer::_bind_methods() {
+	// 直接调用方：Godot ClassDB；顶层为模块类型注册。
 	ClassDB::bind_method(D_METHOD("set_path_finder", "path_finder"), &PathDebugDrawer::set_path_finder);
 	ClassDB::bind_method(D_METHOD("set_path", "path"), &PathDebugDrawer::set_path);
 }
 
 void PathDebugDrawer::_notification(int p_what) {
+	// 直接调用方：Godot SceneTree/CanvasItem；顶层是入树、绘制与退出树生命周期。
 	if (p_what == NOTIFICATION_READY) {
 		_ready();
 	}
@@ -408,12 +420,14 @@ void PathDebugDrawer::_notification(int p_what) {
 }
 
 void PathDebugDrawer::_ready() {
+	// Godot 只有启用 process_input 的入树 Node 才会收到 Viewport 输入回调。
 	set_process_input(true);
 	set_z_index(1000);
 	set_z_as_relative(false);
 }
 
 void PathDebugDrawer::_draw() {
+	// Godot 仅允许在 NOTIFICATION_DRAW 阶段调用 draw_*；状态变化用 queue_redraw 请求重绘。
 	if (path_finder.is_null()) {
 		return;
 	}
@@ -447,12 +461,14 @@ void PathDebugDrawer::_draw() {
 }
 
 void PathDebugDrawer::_exit_tree() {
+	// Node 退出树后不再可安全绘制，让寻路器立即解除非拥有 drawer 指针。
 	if (path_finder.is_valid()) {
 		path_finder->clear_drawer();
 	}
 }
 
 void PathDebugDrawer::input(const Ref<InputEvent> &p_event) {
+	// 直接调用方：Godot Viewport 输入传播；顶层来源：平台鼠标事件。
 	if (path_finder.is_null()) {
 		return;
 	}

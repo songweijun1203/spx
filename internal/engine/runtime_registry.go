@@ -23,6 +23,9 @@ import (
 )
 
 type runtimeState struct {
+	// sprites 是 gid 到低层 Go 精灵代理的注册表。声明为接口是为了容纳不同的
+	// 具体代理类型；SpriteImpl 的普通代理路径下，动态类型通常是 *internal/engine.Sprite。
+	// 这里不保存根包的 SpriteImpl，游戏逻辑对象由 Game.shapeMgr 管理。
 	sprites        map[Object]gdx.ISpriter
 	uiNodes        map[Object]gdx.IUiNode
 	spriteTypes    map[string]reflect.Type

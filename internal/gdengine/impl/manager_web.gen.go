@@ -40,6 +40,9 @@ import (
 	. "github.com/goplus/spx/v3/pkg/spx/pkg/engine"
 )
 
+// BindMgr 把平台 Manager 实例赋给 engine 包的一组全局接口变量。
+// 调用时机：gdengine.PrepareLink() 创建完全部 Manager 后；后续游戏代码通过
+// AudioMgr、SpriteMgr 等接口调用具体平台实现。
 func BindMgr(mgrs []IManager) {
 	for _, mgr := range mgrs {
 		switch v := mgr.(type) {
@@ -140,6 +143,8 @@ type uiMgr struct {
 	baseMgr
 }
 
+// createMgrs 创建当前平台的全部 Manager，具体方法体由平台模板提供的生成函数决定。
+// 直接上级：manager_base.go 的 CreateMgrs()。
 func createMgrs() []IManager {
 	addManager(&audioMgr{})
 	addManager(&cameraMgr{})
@@ -159,7 +164,7 @@ func createMgrs() []IManager {
 	return mgrs
 }
 
-// call gdextension interface functions
+// 以下方法把 Go Manager 调用转换为当前平台的 GDExtension 接口调用。
 
 func (pself *audioMgr) StopAll() {
 	API.SpxAudioStopAll.Invoke()

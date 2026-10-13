@@ -24,6 +24,13 @@ import (
 	. "github.com/goplus/spx/v3/pkg/spx/pkg/engine"
 )
 
+// bindCallbacks 组装平台无关的 Go 回调表。
+//
+// 平台：公共层，Native 与 Web 共用同一套业务回调。
+// 调用时机：PrepareLink() 已建立平台 FFI、即将创建 Manager 时。
+// 直接上级：gdengine.PrepareLink()。
+// 跨模块使用：Native 由 func_on_xxx 调用，Web 由 gdspxDispatch() 调用；
+// 两条平台链路最终都会进入本文件的 onXxx 函数。
 func bindCallbacks() CallbackInfo {
 	return CallbackInfo{
 		CoreCallbackInfo: CoreCallbackInfo{
@@ -66,7 +73,7 @@ func bindCallbacks() CallbackInfo {
 		OnTriggerStay:    onTriggerStay,
 		OnTriggerExit:    onTriggerExit,
 
-		// Go UI construction handles OnStart; the update callback has no delta.
+		// UI 的 OnStart 由 Go 创建流程处理；UI 更新回调本身没有 delta 参数。
 		OnUiDestroyed:   onUiDestroyed,
 		OnUiPressed:     onUiPressed,
 		OnUiReleased:    onUiReleased,
@@ -77,7 +84,15 @@ func bindCallbacks() CallbackInfo {
 	}
 }
 
+// 以下 onEngineXxx 是 Native/Web 共用的引擎生命周期处理函数。
+// 直接上级：bindCallbacks() 返回的 CallbackInfo；平台 FFI 收到 Godot 事件后调用。
+
+// onEngineStart 先启动所有 Manager，再把启动事件交给 internal/engine。
 func onEngineStart() {
+	// 这里遍历的是 Go 侧 Manager 代理。当前具体代理都继承 baseMgr 的空 OnStart；
+	// 真正创建 sprite_root、UI CanvasLayer、画笔 SubViewport 等节点的是 C++
+	// SpxEngine::on_awake() 中更早执行的 C++ Manager.on_awake/on_start。
+	// 保留该钩子是为了让 Web、pure_engine 或以后覆写生命周期的代理拥有统一入口。
 	for _, mgr := range mgrs {
 		mgr.OnStart()
 	}
@@ -86,11 +101,12 @@ func onEngineStart() {
 	}
 }
 
+// onEngineUpdate 处理每帧 Manager、精灵和游戏运行时更新。
 func onEngineUpdate(delta float64) {
-	// Logical update callbacks share SPX's fixed delta while an input replay
-	// session is active, keeping scripts, timers, tweens, and engine-facing
-	// updates aligned.
+	// 输入回放期间统一使用 SPX 固定逻辑步长，使脚本、计时器、Tween 和引擎更新保持一致。
 	delta = itime.EffectiveLogicalDeltaTime(delta)
+	// 1. 更新 Go 侧 Manager 代理。当前 Native/Web 代理使用 baseMgr 空实现；真正的
+	// C++ Manager 更新已由 SpxEngine::on_update() 在回调 Go 之前完成。
 	for _, mgr := range mgrs {
 		mgr.OnUpdate(delta)
 	}
@@ -99,21 +115,34 @@ func onEngineUpdate(delta float64) {
 	for _, sprite := range Sprites() {
 		sprites = append(sprites, sprite)
 	}
+
+	// 2. 更新 Go 侧 Godot 精灵代理，不是根包的业务 SpriteImpl。当前默认代理的
+	// OnUpdate 为空，此入口主要为场景预制精灵或未来扩展保留统一生命周期钩子。
 	for _, sprite := range sprites {
-		sprite.OnUpdate(delta)
+		sprite.OnUpdate(delta) //代码中目前是空实现，此处的跟新应该怎么理解呢ß
 	}
+
+	// 3. 进入根包 Game 的一帧流程：事件采样、协程调度、视觉同步和物理回读。
 	if coreCallbacks.OnEngineUpdate != nil {
 		coreCallbacks.OnEngineUpdate(delta)
 	}
 	InternalUpdateEngine(delta)
 }
 
+// onEngineFixedUpdate 处理 Godot 物理帧对应的 Go Manager 和精灵钩子。
+//
+// 它的直接上级是平台 FFI 转发的 OnEngineFixedUpdate，最顶层来源是
+// Godot 的固定物理帧。这里不负责替代 Godot PhysicsServer 的碰撞求解，
+// 也不调用普通逻辑帧的 Game.OnEngineUpdate() 或 gco.Update()；它只把
+// 固定 delta 交给 Go Manager 和每个精灵的 OnFixedUpdate()。
+// 默认 Manager/Sprite 的 OnFixedUpdate 是空实现，项目或扩展只有在需要
+// 固定步长逻辑时覆盖它，才会在这里执行实际代码。
 func onEngineFixedUpdate(delta float64) {
-	// Fixed-update callbacks intentionally keep Godot's raw physics delta.
-	// Input replay virtualizes only SPX logical update time.
+	// 固定更新保留 Godot 原始物理 delta；输入回放只虚拟化 SPX 的逻辑更新时间。
 	for _, mgr := range mgrs {
 		mgr.OnFixedUpdate(delta)
 	}
+	// 复制当前精灵列表，避免用户固定帧回调中创建/销毁精灵时影响本轮遍历。
 	sprites = sprites[:0]
 	for _, sprite := range Sprites() {
 		sprites = append(sprites, sprite)
@@ -126,6 +155,7 @@ func onEngineFixedUpdate(delta float64) {
 	}
 }
 
+// onEngineDestroy 按“游戏逻辑、精灵、Manager”的顺序执行销毁前处理。
 func onEngineDestroy() {
 	if coreCallbacks.OnEngineDestroy != nil {
 		coreCallbacks.OnEngineDestroy()
@@ -168,7 +198,7 @@ func onSceneSpriteInstantiated(id int64, type_name string) {
 	BindSceneInstantiatedSprite(Object(id), type_name)
 }
 
-// sprite
+// 以下为 Native/Web 共用的精灵事件处理函数。
 func onSpriteReady(id int64) {
 	if sprite := GetSprite(Object(id)); sprite != nil {
 		sprite.OnStart()
@@ -187,7 +217,7 @@ func onSpriteDestroyed(id int64) {
 	DeleteSprite(Object(id))
 }
 
-// input
+// 以下为 Native/Web 共用的输入事件处理函数。
 func onMousePressed(id int64) {
 	spxlog.Debug("OnMousePressed %d", id)
 	if coreCallbacks.OnMousePressed != nil {
@@ -232,7 +262,7 @@ func onAxisChanged(name string, value float64) {
 	spxlog.Debug("OnAxisChanged %s %f", name, value)
 }
 
-// physics
+// 以下为 Native/Web 共用的碰撞和触发事件处理函数。
 func onCollisionEnter(id int64, oid int64) {
 	spxlog.Debug("OnCollisionEnter %d %d", id, oid)
 }
@@ -266,7 +296,7 @@ func onTriggerExit(id int64, oid int64) {
 	}
 }
 
-// ui
+// 以下为 Native/Web 共用的 UI 事件处理函数。
 func onUiPressed(id int64) {
 	if node := GetUINode(Object(id)); node != nil {
 		node.V_OnUiPressed()

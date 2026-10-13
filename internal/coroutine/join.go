@@ -16,8 +16,11 @@
 
 package coroutine
 
-// Join waits until target has finished. It yields when called from a coroutine
-// managed by this manager and blocks the calling goroutine otherwise.
+// Join 等待 target 完全退出。
+//
+// 同一管理器的受管调用方通过 waiterSet + Yield 交还脚本执行权；外部 goroutine 直接
+// 阻塞在 target.done。等待自己没有意义，直接返回。直接调用方包括事件注册屏障、
+// BatchWaitDone 和停止资源流程。
 func (p *Coroutines) Join(target Thread) {
 	if target == nil {
 		return
@@ -34,14 +37,17 @@ func (p *Coroutines) Join(target Thread) {
 	p.waitOn(me, &target.joinWaiters)
 }
 
-// JoinAll waits for each target to finish.
+// JoinAll 按传入顺序等待全部 Thread 结束。
 func (p *Coroutines) JoinAll(targets []Thread) {
 	for _, target := range targets {
 		p.Join(target)
 	}
 }
 
-// JoinYieldedOrDone waits until target first yields or finishes.
+// JoinYieldedOrDone 等待 target 第一次 Yield 或直接结束，不等待其后续生命周期。
+//
+// 直接调用方：bootstrap/Main 和立即型帧回调；总体用途是让新脚本至少执行一个片段，
+// 同时避免它在 Wait/WaitNextFrame 后长期阻塞创建方。
 func (p *Coroutines) JoinYieldedOrDone(target Thread) {
 	if target == nil {
 		return

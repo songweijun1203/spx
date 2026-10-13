@@ -43,6 +43,9 @@
 #endif
 
 #ifdef MACOS_ENABLED
+
+// Godot macOS 后端按屏幕最大缩放因子处理原生窗口尺寸；SPX 对 Go 暴露逻辑尺寸，
+// 因此 set/get 必须成对缩放，避免 Retina 屏幕窗口大小翻倍或减半。
 static Size2i _spx_scale_window_size_for_macos(const Size2i &p_size) {
 	const float scale = DisplayServer::get_singleton()->screen_get_max_scale();
 	return Size2i((Vector2(p_size) * scale).round());
@@ -55,15 +58,19 @@ static Size2i _spx_unscale_window_size_for_macos(const Size2i &p_size) {
 #endif
 
 void SpxPlatformMgr::on_awake() {
+	// 直接调用方：SpxEngine::_notify_managers(on_awake)；顶层为 Godot/SPX 启动。
+	// get_user_data_dir 是 Godot 对 user:// 的平台化解析结果。
 	persistent_data_dir = ::OS::get_singleton()->get_user_data_dir();
 }
 
 void SpxPlatformMgr::on_reset(int reset_code) {
+	// 直接调用方：SpxEngine::on_reset；顶层为 Go runtime 重置/重跑游戏。
 	window_size_uses_content_scale = false;
 	set_stretch(false, 0, 0);
 }
 
 void SpxPlatformMgr::set_stretch(GdBool enabled, GdInt content_width, GdInt content_height) {
+	// 直接调用方：生成的 ABI；顶层为 Go 项目窗口/舞台配置。
 	auto root = get_root();
 	if (root == nullptr) {
 		return;
@@ -76,7 +83,7 @@ void SpxPlatformMgr::set_stretch(GdBool enabled, GdInt content_width, GdInt cont
 
 #ifdef WEB_ENABLED
 	if (enabled) {
-		// The caller has already applied window and device scaling.
+		// Web 调用方已应用窗口和设备像素缩放，这里只写逻辑内容尺寸。
 		root->set_content_scale_size(Size2i(content_width, content_height));
 	}
 #endif
@@ -103,9 +110,7 @@ void SpxPlatformMgr::set_window_size(GdInt width, GdInt height, GdBool with_cont
 	Size2i window_size(width, height);
 #ifdef MACOS_ENABLED
 	if (window_size_uses_content_scale) {
-		// Godot's macOS backend normalizes window sizes by the global max display
-		// scale. SPX callers pass logical window dimensions, so convert explicitly
-		// to keep the visible window size stable on HiDPI displays.
+		// SPX 调用方传逻辑窗口尺寸，显式转换后可在 HiDPI 屏幕保持可见尺寸稳定。
 		window_size = _spx_scale_window_size_for_macos(window_size);
 	}
 #endif
@@ -154,6 +159,7 @@ GdBool SpxPlatformMgr::is_debug_mode() {
 }
 
 GdBool SpxPlatformMgr::is_main_thread() {
+	// Go 侧用此查询决定是否需要把 Godot 对象操作投递到主线程。
 	return Thread::is_main_thread();
 }
 

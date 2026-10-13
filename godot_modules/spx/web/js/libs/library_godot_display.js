@@ -28,6 +28,14 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+/*
+ * Godot Web 显示/窗口实现的 SPX 覆盖版本，由 SCsub 替换引擎默认同名文件。
+ * 直接调用方：Godot Web DisplayServer 的 C++ 导入；顶层来源：Godot 窗口、Canvas、
+ * 虚拟键盘、剪贴板和鼠标 API。更新锁定 Godot 版本时需同步核对上游变化。
+ * DOM、Window、Canvas 和全屏/剪贴板 API 只能在浏览器主线程访问；__proxy:'sync'
+ * 是 Emscripten 线程构建把 C++ 调用代理到该线程的契约。WASM 指针只在同步调用期有效。
+ */
+
 const GodotDisplayVK = {
 
 	$GodotDisplayVK__deps: ['$GodotRuntime', '$GodotConfig', '$GodotEventListeners'],

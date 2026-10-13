@@ -82,6 +82,10 @@ func (m *Manager) Add(bucket Bucket, sink Sink) {
 	m.buckets[bucket] = append(m.buckets[bucket], sink)
 }
 
+// TryAddStart 只在一次性启动快照尚未生成时接受 OnStart 注册。
+//
+// 直接调用方：scriptEventBindings.OnStart；总体流程调用方：Game/精灵 Main 的事件注册，
+// 以及运行时克隆重跑 Main。返回 false 表示 OnStart 已开始派发，调用方不能补入本批次。
 func (m *Manager) TryAddStart(sink Sink) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -103,8 +107,12 @@ func (m *Manager) Snapshot(bucket Bucket) []Sink {
 	return out
 }
 
-// SnapshotStartOnce closes start registration and returns its first snapshot.
-// The returned slice has the same read-only, shallow-view contract as Snapshot.
+// SnapshotStartOnce 关闭后续 OnStart 注册，并返回唯一一次启动处理器快照。
+//
+// 直接调用方：Game.takeStartSinks；总体流程调用方：bootstrap 完成后的项目 OnStart
+// 派发。startFired 在返回快照前置为 true，所以 OnStart 处理器内部创建的运行时克隆
+// 即使重跑 Main，也无法把新 OnStart 插入正在派发的启动批次。
+// 返回切片遵循与 Snapshot 相同的只读、浅快照约定。
 func (m *Manager) SnapshotStartOnce() []Sink {
 	m.mu.Lock()
 	defer m.mu.Unlock()

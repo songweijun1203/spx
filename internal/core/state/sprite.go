@@ -17,13 +17,13 @@
 package state
 
 type SpriteRuntimeState struct {
-	IsVisible           bool
-	Cloned              bool
-	IsDying             bool
-	DirtyVersion        uint64
-	ProxySyncVersion    uint64
-	VisualVersion       uint64
-	HasOnCloned         bool
-	HasOnTouchStart     bool
-	DefaultCostumeIndex int
+	IsVisible           bool   // Go 侧逻辑可见性，最终结合克隆发布门控写入代理。
+	Cloned              bool   // 是否为运行时克隆体。
+	IsDying             bool   // 是否已经进入销毁流程。
+	DirtyVersion        uint64 // 每次待同步代理变换递增。
+	ProxySyncVersion    uint64 // 最近一次成功写入 Godot 代理的逻辑版本。
+	VisualVersion       uint64 // 相机、气泡等 Go 侧视觉观察者使用的版本。
+	HasOnCloned         bool   // 是否为当前 owner 注册了 OnCloned。
+	HasOnTouchStart     bool   // 是否为当前 owner 注册了触碰开始处理器。
+	DefaultCostumeIndex int    // 配置解析后的默认服装索引。
 }

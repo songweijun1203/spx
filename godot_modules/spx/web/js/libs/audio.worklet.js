@@ -28,6 +28,15 @@
 /* SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.                 */
 /**************************************************************************/
 
+/*
+ * Godot AudioWorklet 的 SPX 覆盖版本，由 SCsub 替换上游同名 Worklet 源码。
+ * 直接调用方：library_godot_audio.js 创建的 AudioWorkletNode；顶层来源：Godot
+ * AudioServer 混音回调。更新 Godot 版本时需同步核对上游协议。
+ * 本文件运行在 AudioWorkletGlobalScope，不是浏览器主线程，不能访问 DOM；线程模式
+ * 通过 SharedArrayBuffer/Atomics 协调环形缓冲，非线程模式通过可转移块和对象池通信。
+ * 传入 TypedArray 是共享/借用视图，处理器不得在其底层缓冲失效后继续访问。
+ */
+
 class RingBuffer {
 	constructor(p_buffer, p_state, p_threads) {
 		this.buffer = p_buffer;

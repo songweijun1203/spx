@@ -71,12 +71,19 @@ func Sched(state ScheduleState, schedTimeoutMs float64, hooks SchedulerHooks) er
 	return nil
 }
 
+// Forever 只负责循环结构：每次 call 返回后都调用一次由上层注入的 yield。
+// yield 并不一定表示“等待下一帧”。SPX 正常运行时传入 NewControlFlowWaiter：
+// 它先把当前协程登记为循环续体并让出，是否在同一引擎帧恢复由协程调度器根据
+// 重绘标记和同帧工作预算统一决定。
 func Forever(call func(), yield func()) {
 	if call == nil {
 		return
 	}
 	for {
+		// 一轮用户逻辑在同一个脚本执行片段中完整运行；调度切换发生在下面的
+		// yield，其他 SPX 脚本不会在普通语句之间插入执行。
 		call()
+		// 普通模式最终进入 Coroutines.YieldLoopFor；恢复后才开始下一轮 call。
 		yield()
 	}
 }

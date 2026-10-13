@@ -38,99 +38,87 @@
 #include "core/variant/array.h"
 #include "core/variant/dictionary.h"
 
-// ============================================================================
-// Physics layer data
-// ============================================================================
+// 一个 Godot TileSet 物理层的序列化配置。
 struct SpxPhysicsLayerData {
-	uint32_t collision_layer = 1;
-	uint32_t collision_mask = 1;
+	uint32_t collision_layer = 1; // 该层产生的碰撞位。
+	uint32_t collision_mask = 1; // 该层参与查询的目标位。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 };
 
-// ============================================================================
-// Tile physics data (collision polygons)
-// ============================================================================
+// 单个瓦片在某个 TileSet 物理层上的碰撞多边形集合。
 struct SpxTilePhysicsData {
-	int layer = 0;
-	Vector<Vector<float>> polygons; // Each polygon is a flat array [x1,y1,x2,y2,...]
+	int layer = 0; // TileSet 物理层索引。
+	Vector<Vector<float>> polygons; // 每个多边形为扁平数组 [x1,y1,x2,y2,...]。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 };
 
-// ============================================================================
-// Single tile data
-// ============================================================================
+// 一个 atlas 瓦片的序列化数据。
 struct SpxTileData {
-	Vector2i atlas_coords;
-	Vector2i size_in_atlas = Vector2i(1, 1);
-	Vector<SpxTilePhysicsData> physics;
+	Vector2i atlas_coords; // 瓦片左上角在 atlas 网格中的坐标。
+	Vector2i size_in_atlas = Vector2i(1, 1); // 瓦片跨越的 atlas 单元数。
+	Vector<SpxTilePhysicsData> physics; // 各物理层的碰撞多边形。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 };
 
-// ============================================================================
-// TileSet source data (Atlas type)
-// ============================================================================
+// 一个 Godot TileSetAtlasSource 的序列化数据。
 struct SpxTileSetSourceData {
-	int id = 0;
-	String type = "atlas";
-	String texture; // Relative path
-	Vector2i texture_region_size;
-	Vector2i margins;
-	Vector2i separation;
-	Vector<SpxTileData> tiles;
+	int id = 0; // 在 TileSet 内唯一的 source ID。
+	String type = "atlas"; // source 类型；当前仅支持 atlas。
+	String texture; // 相对 JSON 文件的纹理路径。
+	Vector2i texture_region_size; // atlas 单格像素尺寸。
+	Vector2i margins; // 纹理外边距。
+	Vector2i separation; // atlas 单元之间的像素间隔。
+	Vector<SpxTileData> tiles; // source 中显式存在的瓦片。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 };
 
-// ============================================================================
-// TileSet data
-// ============================================================================
+// 完整 Godot TileSet 的序列化数据。
 struct SpxTileSetData {
-	Vector2i tile_size = Vector2i(16, 16);
-	String tile_shape = "square";
-	Vector<SpxPhysicsLayerData> physics_layers;
-	Vector<SpxTileSetSourceData> sources;
+	Vector2i tile_size = Vector2i(16, 16); // 地图逻辑单格尺寸。
+	String tile_shape = "square"; // Godot TileSet 形状名称。
+	Vector<SpxPhysicsLayerData> physics_layers; // 物理层配置。
+	Vector<SpxTileSetSourceData> sources; // atlas source 列表。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 };
 
-// ============================================================================
-// TileMapLayer data
-// ============================================================================
+// 一个 Godot TileMapLayer 节点的序列化数据。
 struct SpxTileMapLayerData {
-	String name;
-	int z_index = 0;
-	Vector2 offset;
-	bool enabled = true;
-	String tile_map_data_base64; // Base64 encoded binary data
+	String name; // 层节点名。
+	int z_index = 0; // CanvasItem 绘制层级。
+	Vector2 offset; // 层相对地图根节点的像素偏移。
+	bool enabled = true; // 层是否启用。
+	String tile_map_data_base64; // Godot TileMap 二进制单元数据的 Base64 表示。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 };
 
-// ============================================================================
-// Complete TileMap data (root structure)
-// ============================================================================
+// JSON 文件的根结构，描述一个可在运行期重建的完整 TileMap。
+// 直接调用方：SpxTilemapparserMgr::load_tilemap/save 工具。
+// 顶层调用方：Go LoadTilemap API 或项目导出工具。
 struct SpxTileMapData {
-	int version = 1;
-	String name;
-	Vector2 node_offset; // Center offset in pixels for positioning tilemap at origin
-	SpxTileSetData tileset;
-	Vector<SpxTileMapLayerData> layers;
+	int version = 1; // JSON schema 版本。
+	String name; // 地图逻辑名，也是运行期缓存键。
+	Vector2 node_offset; // 将地图中心对齐 SPX 原点使用的像素偏移。
+	SpxTileSetData tileset; // 共享 TileSet 描述。
+	Vector<SpxTileMapLayerData> layers; // 按场景顺序排列的地图层。
 
 	bool from_json(const Dictionary &dict);
 	Dictionary to_json() const;
 
-	// Convenience method: parse from file
+	// 解析入口直接由 SpxTilemapparserMgr 调用；顶层来自 Go LoadTilemap。
 	static bool parse_from_file(const String &json_path, SpxTileMapData &out_data);
-	// Convenience method: save to file
+	// 导出辅助入口，写入必须遵守 Godot FileAccess 的 res://、user:// 权限规则。
 	bool save_to_file(const String &json_path) const;
 };
 

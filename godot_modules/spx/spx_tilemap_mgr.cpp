@@ -33,6 +33,7 @@
 
 #include "spx_draw_tiles.h"
 
+// 直接调用方：SpxEngine 生命周期广播；顶层调用方：Go runtime 退出或重置项目。
 void SpxTilemapMgr::on_destroy() {
 	close_draw_tiles();
 }
@@ -42,7 +43,7 @@ void SpxTilemapMgr::on_reset(int reset_code) {
 }
 
 void SpxTilemapMgr::open_draw_tiles() {
-	open_draw_tiles_with_size(16); // default tile_size = 16
+	open_draw_tiles_with_size(16); // 未指定时采用 16 像素的 SPX 默认格尺寸。
 }
 
 void SpxTilemapMgr::set_layer_offset(GdInt index, GdVec2 offset) {
@@ -65,9 +66,11 @@ void SpxTilemapMgr::open_draw_tiles_with_size(GdInt tile_size) {
 	}
 	draw_tiles = memnew(SpxDrawTiles);
 	draw_tiles->set_tile_size(tile_size);
+	// Godot 规则：Node 只有加入 SceneTree 后才会接收 ready/process/input/draw 通知。
 	get_spx_root()->add_child(draw_tiles);
 }
 
+// 直接调用方：所有允许隐式打开编辑器的瓦片接口；顶层调用方：Go Tilemap API。
 SpxDrawTiles *SpxTilemapMgr::_ensure_draw_tiles() {
 	if (draw_tiles == nullptr) {
 		open_draw_tiles();
@@ -85,6 +88,7 @@ void SpxTilemapMgr::set_tile_with_collision_info(GdString texture_path, GdArray 
 	Vector<Vector2> points = {};
 	auto len = collision_points == nullptr ? 0 : collision_points->size;
 	const float *data = nullptr;
+	// ABI 数组按 x、y 连续存放；奇数长度时末尾的孤立值按协议忽略。
 	if (len > 0) {
 		data = SpxAbi::get_array<float>(collision_points, 0);
 		if (data == nullptr) {
@@ -144,6 +148,7 @@ GdString SpxTilemapMgr::get_tile_with_layer(GdVec2 pos, GdInt layer_index) {
 
 void SpxTilemapMgr::close_draw_tiles() {
 	if (draw_tiles != nullptr) {
+		// Godot 规则：SceneTree 中的 Node 使用 queue_free 延迟到安全时机释放。
 		draw_tiles->queue_free();
 		draw_tiles = nullptr;
 	}
@@ -151,6 +156,7 @@ void SpxTilemapMgr::close_draw_tiles() {
 
 void SpxTilemapMgr::exit_tilemap_editor_mode() {
 	if (draw_tiles != nullptr) {
+		// 只退出交互编辑并放弃 Manager 引用；节点及已绘制瓦片继续留在场景树中。
 		draw_tiles->exit_editor_mode();
 		draw_tiles = nullptr;
 	}

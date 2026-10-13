@@ -68,6 +68,10 @@ func withEventRegistrationBarrier(owner any, dispatch func()) {
 	if gco.TryRunFromEngine(owner, dispatch) {
 		return
 	}
+
+	//当前调用者是一个没有通过 gco.Create() 注册到 SPX 调度器中的普通 Go goroutine，
+	//并且它也不是 Godot 主线程 ，其实目前项目实际使用中下面的情况是不会发生的，
+	// 因为所有的事件派发都是在协程中进行的，或者是在 Godot 主线程中进行的。
 	dispatcher := gco.Create(owner, func(coroutine.Thread) {
 		dispatch()
 	})
@@ -78,10 +82,13 @@ func (p *scriptEventRegistry) globalSinks(bucket coreevent.Bucket) []eventSink {
 	return sinksInTargetOrder(p.game, p.manager.Snapshot(bucket))
 }
 
+// dispatchGlobal 派发面向全部 owner 的事件，并遵循当前舞台前后顺序。
 func (p *scriptEventRegistry) dispatchGlobal(bucket coreevent.Bucket, event scriptEventDispatch) {
 	p.dispatchSinks(p.globalSinks(bucket), event)
 }
 
+// dispatchTarget 只匹配指定 owner。先在屏障外建立 owner 索引，避免用户处理器
+// 启动后修改注册表影响本次稳定快照。
 func (p *scriptEventRegistry) dispatchTarget(bucket coreevent.Bucket, owner any, event scriptEventDispatch) {
 	sinks := p.manager.Snapshot(bucket)
 	// Resolve ownership before entering the registration barrier.
@@ -113,6 +120,7 @@ func (p *scriptEventRegistry) dispatchTarget(bucket coreevent.Bucket, owner any,
 	})
 }
 
+// dispatchSinks 在任何处理器取得执行权前完成整批条件匹配。
 func (p *scriptEventRegistry) dispatchSinks(sinks []eventSink, event scriptEventDispatch) {
 	withEventRegistrationBarrier(p.game, func() {
 		// Complete matching before starting user handlers.
@@ -121,12 +129,21 @@ func (p *scriptEventRegistry) dispatchSinks(sinks []eventSink, event scriptEvent
 	})
 }
 
+// dispatchStartSinks 是 OnStart 的专用派发入口；启动事件需要额外跟踪
+// 尚未真正运行的线程，以便 reset/StopAll 时正确取消它们。
 func (p *scriptEventRegistry) dispatchStartSinks(sinks []eventSink, event scriptEventDispatch) {
 	withEventRegistrationBarrier(p.game, func() {
 		p.dispatchStartEventBatch(sinks, event)
 	})
 }
 
+// dispatchStartEventBatch 与 doWhenStart 运行在同一个 startEventDispatcher Thread
+// 的调用栈中，不会再创建一层派发协程。它把命中的 OnStart 处理器转换为一批子 Thread，
+// 并额外登记 pendingStartThreads，以便 reset/StopAll 能取消尚未进入 Run 的处理器。
+//
+// OnStart 传入的模式是 BatchWaitFirstSlice：StartBatch 会等待 progress[len(tasks)]，
+// 其语义是所有子 Thread 都至少执行完首个脚本片段（已经 Yield/Wait 或已经结束），
+// 而不是等待所有 OnStart 处理器彻底结束。子 Thread 后续等待和恢复仍由逐帧调度器负责。
 func (p *scriptEventRegistry) dispatchStartEventBatch(sinks []eventSink, event scriptEventDispatch) {
 	matched := matchingEventSinks(sinks, event.matchData)
 	if len(matched) == 0 || gco == nil {
@@ -239,6 +256,11 @@ func matchingEventSinks(sinks []eventSink, matchData any) []eventSink {
 	return matched
 }
 
+// dispatchMatchedScriptEventBatch 把匹配结果转换为协程任务并按指定 BatchMode 启动。
+//
+// 直接调用方：dispatchSinks、dispatchStartEventBatch；总体流程调用方：全部脚本事件
+// 派发。OnCloned 在这里形成以克隆 SpriteImpl 为 Owner 的独立处理器协程，并使用
+// BatchWaitFirstSlice 作为克隆初始化屏障。
 func dispatchMatchedScriptEventBatch(matched []eventSink, event scriptEventDispatch) {
 	if len(matched) == 0 {
 		return

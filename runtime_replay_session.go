@@ -286,6 +286,7 @@ func (s *inputSession) statusLocked() InputSessionStatus {
 func (s *inputSession) beginFrame() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 只有 Running 会话可以产生新 tick；frameOpen 防止同一引擎帧重复采样。
 	if s.phase != InputSessionPhaseRunning || s.frameOpen {
 		return false
 	}
@@ -295,6 +296,8 @@ func (s *inputSession) beginFrame() bool {
 
 func (s *inputSession) endFrame() {
 	s.mu.Lock()
+	// 正常路径在 OnEngineFrameEnd 调用；解析失败路径会提前调用，
+	// 使下一次有效帧仍有机会重新打开会话。
 	s.frameOpen = false
 	s.mu.Unlock()
 }

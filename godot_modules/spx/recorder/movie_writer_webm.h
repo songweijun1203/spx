@@ -41,12 +41,15 @@
 #include "servers/movie_writer/movie_writer.h"
 #include "spx_realtime_recorder.h"
 
+// Web 平台录制适配器，将 Godot/SPX 的录制生命周期转发给浏览器 MediaRecorder 桥接层。
+// 直接调用方：MovieRecorderManager 或 Godot MovieWriter；顶层调用方：Go 录制 API/--write-movie。
+// Godot 规则：MovieWriter 派生类由注册中心按扩展名选择；浏览器对象只能在 Web 构建分支使用。
 class MovieWriterWebM : public MovieWriter, public SpxRealtimeRecorder {
 	GDCLASS(MovieWriterWebM, MovieWriter)
 
-	bool enable_auto_download;
-	String base_path;
-	uint32_t fps = 30;
+	bool enable_auto_download; // 结束后是否让浏览器自动下载生成的 Blob。
+	String base_path; // 输出基础名，供 JS 侧命名下载文件。
+	uint32_t fps = 30; // 浏览器视频轨目标帧率。
 
 public:
 	MovieWriterWebM();
@@ -69,12 +72,12 @@ protected:
 #if defined(WEB_ENABLED) && defined(MODULE_SPX_ENABLED)
 
 private:
-	bool web_audio_recorder_initialized = false;
-	bool web_audio_recording_active = false;
-	Vector<uint8_t> web_audio_buffer;
+	bool web_audio_recorder_initialized = false; // JS 音频桥是否已创建。
+	bool web_audio_recording_active = false; // 当前是否接收音频块。
+	Vector<uint8_t> web_audio_buffer; // 向 JS 传递 PCM 前的复用缓冲。
 
-	bool web_video_recorder_initialized = false;
-	bool web_video_recording_active = false;
+	bool web_video_recorder_initialized = false; // JS 视频桥是否已创建。
+	bool web_video_recording_active = false; // 当前是否采集 Canvas 视频轨。
 
 	void setup_web_audio_recorder();
 	void cleanup_web_audio_recorder();

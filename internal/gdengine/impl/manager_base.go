@@ -23,13 +23,20 @@ import (
 )
 
 var (
+	// mgrs 保存当前 createMgrs() 创建的全部平台 Manager。
 	mgrs []IManager
 )
 
+// baseMgr 为不关心某些生命周期事件的具体 Manager 提供空实现。
+// 平台：Native、Web 和 pure_engine 共用。
 type baseMgr struct{}
 
 func (pself *baseMgr) OnStart() {}
 
+// OnUpdate 是 Go Manager 代理的普通帧生命周期默认实现。
+// 当前各平台的具体 Manager 都嵌入 baseMgr 且没有覆写此方法，因此
+// gdengine.onEngineUpdate() 遍历 mgrs 时这里实际为空操作。具体的 Godot
+// SpxManager 已由 C++ SpxEngine::on_update() 在回调 Go 之前完成逐帧更新。
 func (pself *baseMgr) OnUpdate(delta float64) {}
 
 func (pself *baseMgr) OnFixedUpdate(delta float64) {}
@@ -38,12 +45,19 @@ func (pself *baseMgr) OnDestroy() {}
 
 func (pself *baseMgr) OnPause(isPaused bool) {}
 
+// CreateMgrs 清空旧列表并调用编译期选中的 createMgrs() 创建所有 Manager。
+//
+// 平台：公共入口；Native/Web/pure_engine 各自提供 createMgrs() 实现。
+// 直接上级：gdengine.PrepareLink()。
+// 调用时机：平台 FFI 与回调表完成绑定之后、全局 Manager 接口赋值之前。
 func CreateMgrs() []IManager {
-	// Make repeated calls deterministic.
+	// 确保重复创建会话时，不会残留上一次的 Manager。
 	mgrs = mgrs[:0]
 	return createMgrs()
 }
 
+// addManager 按创建顺序保存一个 Manager，并返回其具体类型值。
+// 直接上级：各平台生成的 createMgrs()。
 func addManager[T IManager](mgr T) T {
 	mgrs = append(mgrs, mgr)
 	return mgr

@@ -41,12 +41,14 @@
 #include "spx_sprite_mgr.h"
 
 void SpxAudioMgr::on_awake() {
+	// 直接调用方：SpxEngine::_notify_managers(on_awake)；顶层为 Godot 启动流程。
 	SpxAudioBusPool::init();
 	_create_root("audio_root");
 	g_audio_id = 0;
 }
 
 void SpxAudioMgr::on_update(float delta) {
+	// 直接调用方：SpxEngine 每帧 Manager 分发；顶层为 Godot 主循环。
 	if (unlikely(!_require_main_thread(__func__))) {
 		return;
 	}
@@ -65,6 +67,7 @@ void SpxAudioMgr::on_update(float delta) {
 }
 
 void SpxAudioMgr::on_reset(int reset_code) {
+	// 直接调用方：SpxEngine::on_reset；顶层为 Go runtime 重置/重跑一局。
 	if (unlikely(!_require_main_thread(__func__))) {
 		return;
 	}
@@ -74,6 +77,7 @@ void SpxAudioMgr::on_reset(int reset_code) {
 }
 
 void SpxAudioMgr::on_destroy() {
+	// 直接调用方：SpxEngine::on_destroy；顶层为 Godot 节点退出/引擎关闭。
 	if (unlikely(!_require_main_thread(__func__))) {
 		return;
 	}
@@ -167,13 +171,16 @@ GdInt SpxAudioMgr::play(GdObj obj, GdString path) {
 }
 
 GdInt SpxAudioMgr::play_with_attenuation(GdObj obj, GdString path, GdObj owner_id, GdFloat attenuation, GdFloat max_distance) {
+	// 直接调用方：生成的 ABI 包装；顶层为 Go AudioMgr.PlayWithAttenuation。
 	if (unlikely(!_require_main_thread(__func__))) {
 		return 0;
 	}
 	Node *audio_owner = nullptr;
 	if (owner_id == -1) {
+		// 挂在 Camera2D 下可得到不随世界位置衰减的舞台/界面声音。
 		audio_owner = static_cast<Node *>(cameraMgr->get_camera());
 	} else {
+		// 挂在精灵下时 AudioStreamPlayer2D 随精灵移动，Godot 负责 2D 衰减。
 		audio_owner = static_cast<Node *>(spriteMgr->get_sprite(owner_id));
 	}
 
@@ -260,6 +267,7 @@ void SpxAudioMgr::set_timer(GdInt aid, GdFloat time) {
 }
 
 SpxAudio *SpxAudioMgr::_get_aid_audio(GdInt aid) {
+	// aid 只是跨语言稳定句柄；每次经对象表解析，避免持有已销毁 SpxAudio 指针。
 	if (unlikely(!_require_main_thread(__func__))) {
 		return nullptr;
 	}

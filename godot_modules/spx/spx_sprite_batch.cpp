@@ -41,6 +41,7 @@
 
 namespace {
 
+// 与 Go internal/engine/physics_sync.go 保持一致的跨语言命令码；修改时必须同步两端协议。
 enum SpxPhysicsBatchCmd {
 	SPX_PHYSICS_CMD_VELOCITY = 1,
 	SPX_PHYSICS_CMD_GRAVITY = 2,
@@ -58,7 +59,7 @@ enum SpxPhysicsBatchCmd {
 	SPX_PHYSICS_CMD_TRIGGER_ENABLED = 14,
 };
 
-static constexpr int SPX_PHYSICS_BATCH_FIELDS = 6;
+static constexpr int SPX_PHYSICS_BATCH_FIELDS = 6; // 每条物理命令固定占用的 float32 lane 数。
 
 uint32_t read_u32_lane(float value) {
 	uint32_t bits = 0;
@@ -101,8 +102,7 @@ bool decode_batch_int(float value, int &result, const char *op_name, const char 
 
 bool decode_legacy_gd_obj(float value, GdObj &result, const char *op_name) {
 	const double numeric_value = static_cast<double>(value);
-	// GdObj is carried as an integer-valued float in these legacy batches. The
-	// upper bound is exclusive so converting 2^63 cannot overflow int64_t.
+	// 旧版批处理用整数值 float 承载 GdObj；上界采用开区间，避免转换 2^63 时溢出 int64_t。
 	constexpr double gd_obj_upper_bound = 9223372036854775808.0;
 	if (!std::isfinite(numeric_value) || std::trunc(numeric_value) != numeric_value ||
 			numeric_value < 0.0 || numeric_value >= gd_obj_upper_bound) {
@@ -130,12 +130,12 @@ bool validate_batch_length(int length, int header, int count, int stride, const 
 } // namespace
 
 void SpxSpriteMgr::batch_update_transforms(const float *buffer_data, int len) {
+	// 直接调用方：ABI 的 spx_sprite_mgr_batch_update_transforms；顶层调用方：Go
+	// runtime_sync.flushSyncBuffer。Godot Node 不是线程安全对象，故强制主线程执行。
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "SPX transform batches may only be applied on the engine main thread.");
 	const char *op_name = "batch_update_transforms";
-	// Buffer format with header: [updateCount, deleteCount, update_data..., delete_ids...]
-	// - Header: [updateCount, deleteCount]
-	// - Update section: [id, x, y, rotation, scaleX, scaleY, renderOffsetX, renderOffsetY, visible, ...] (9 fields per sprite)
-	// - Delete section: [id1, id2, id3, ...] (1 field per sprite)
+	// 缓冲格式：[更新数, 删除数, 更新记录..., 删除 ID...]；每条更新记录 9 个 float lane：
+	// [id, x, y, rotation, scaleX, scaleY, renderOffsetX, renderOffsetY, visible]。
 	const int FIELDS_PER_SPRITE = 9;
 	const int HEADER_SIZE = 2;
 
@@ -158,8 +158,7 @@ void SpxSpriteMgr::batch_update_transforms(const float *buffer_data, int len) {
 		return;
 	}
 
-	// Validate every record before mutating nodes. This keeps malformed packets
-	// from leaving a partially applied frame.
+	// 修改节点前先校验所有记录，避免畸形数据包留下只应用一部分的帧状态。
 	int idx = HEADER_SIZE;
 	for (int i = 0; i < update_count; i++) {
 		GdObj sprite_id = 0;
@@ -181,8 +180,8 @@ void SpxSpriteMgr::batch_update_transforms(const float *buffer_data, int len) {
 		}
 	}
 
-	// Destroy wins within a frame. Queue every deletion before applying updates;
-	// get_sprite() treats queued nodes as tombstones, including in later batches.
+	// 同一帧内删除优先：先排队全部删除再应用更新；get_sprite 将待删节点视为墓碑，
+	// 后续批次也不会再命中这些节点。
 	idx = delete_start;
 	for (int i = 0; i < delete_count; i++) {
 		const GdObj sprite_id = legacy_gd_obj_from_float(buffer_data[idx++]);
@@ -220,10 +219,13 @@ void SpxSpriteMgr::batch_update_transforms(const float *buffer_data, int len) {
 }
 
 void SpxSpriteMgr::batch_update_visuals(const float *buffer_data, int len) {
+	// 直接调用方：ABI；Go 侧对应 internal/engine.SyncBatchUpdateVisuals 与 VisualSyncBuffer。
+	// 当前生产运行时的 applyCostumeUpdate 仍逐项调用，故此入口主要由桥接接口与测试覆盖。
+	// 一批内先完成格式校验再改节点，避免畸形跨语言数据造成部分提交。
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "SPX visual batches may only be applied on the engine main thread.");
 	const char *op_name = "batch_update_visuals";
-	// Buffer format: [count, entry0..., entry1..., ...]
-	// Each entry (9 floats): [spriteId, renderScaleX, renderScaleY, zIndex, flags, uvX, uvY, uvW, uvH]
+	// 缓冲格式：[count, entry0..., entry1..., ...]；每条记录 9 个 float：
+	// [spriteId, renderScaleX, renderScaleY, zIndex, flags, uvX, uvY, uvW, uvH]。
 	const int VISUAL_FIELDS_PER_SPRITE = 9;
 	const int HEADER_SIZE = 1;
 	const int FLAG_HAS_ZINDEX = 1;
@@ -246,7 +248,7 @@ void SpxSpriteMgr::batch_update_visuals(const float *buffer_data, int len) {
 		return;
 	}
 
-	// Validate the complete packet before applying any visual state.
+	// 应用任何视觉状态前先校验完整数据包。
 	int idx = HEADER_SIZE;
 	for (int i = 0; i < count; i++) {
 		GdObj sprite_id = 0;
@@ -314,6 +316,8 @@ void SpxSpriteMgr::batch_update_visuals(const float *buffer_data, int len) {
 }
 
 GdBool SpxSpriteMgr::batch_retrieve_positions(const GdObj *objs, int count, float *out, int out_len) {
+	// 直接调用方：ABI；顶层调用方：Go runtime_sync.pullPhysicsPositions，
+	// 在物理步完成后把 Godot CharacterBody2D 的权威位置拉回 Go 状态。
 	ERR_FAIL_COND_V_MSG(!Thread::is_main_thread(), false, "SPX sprite positions may only be read on the engine main thread.");
 	if (count < 0 || count > INT_MAX / 2) {
 		print_error("batch_retrieve_positions: invalid count.");
@@ -339,8 +343,11 @@ GdBool SpxSpriteMgr::batch_retrieve_positions(const GdObj *objs, int count, floa
 }
 
 void SpxSpriteMgr::batch_update_physics(const float *buffer_data, int len) {
-	// Buffer format: [count] + count x [cmd, spriteIdLowBits, spriteIdHighBits, a, b, reserved0].
-	// Integer lanes are carried as raw float32 bits to preserve 32/64-bit ids and masks.
+	// 直接调用方：ABI；Go 侧对应 internal/engine.PhysicsSyncBuffer，当前尚无生产 flush 入口。
+	// 形状、层掩码和模式均涉及
+	// PhysicsServer/场景树对象，只能在 Godot 主线程、固定物理步之外安全配置。
+	// 缓冲格式：[count] + count x [cmd, spriteIdLowBits, spriteIdHighBits, a, b, reserved0]。
+	// 整数 lane 使用 float32 原始位承载，确保 32/64 位 ID 和掩码不丢精度。
 	ERR_FAIL_COND_MSG(!Thread::is_main_thread(), "SPX physics batches may only be applied on the engine main thread.");
 	if (buffer_data == nullptr || len < 1) {
 		return;
@@ -354,8 +361,7 @@ void SpxSpriteMgr::batch_update_physics(const float *buffer_data, int len) {
 		return;
 	}
 
-	// Validate opcodes and their numeric lanes before applying any command. ID,
-	// mode, layer, and mask lanes intentionally remain raw float32 bits.
+	// 执行命令前校验全部操作码及数值 lane；ID、mode、layer 和 mask 刻意保持为 float32 原始位。
 	int idx = 1;
 	for (int i = 0; i < count; i++) {
 		int cmd = 0;
@@ -456,7 +462,7 @@ void SpxSpriteMgr::batch_update_physics(const float *buffer_data, int len) {
 }
 
 void SpxSpriteMgr::set_pixel_collision_sampling_step(GdInt step) {
-	// Clamp to valid range (minimum 1, as 0 or negative would cause infinite loop)
+	// 限制到有效范围；最小为 1，零或负数会使采样循环无法推进。
 	if (step < 1) {
 		pixel_collision_sampling_step = 1;
 		print_error("pixel_collision_sampling_step must be at least 1. Setting to 1.");

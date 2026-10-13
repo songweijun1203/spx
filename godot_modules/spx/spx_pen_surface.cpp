@@ -33,6 +33,9 @@
 #include "servers/rendering_server.h"
 #include "spx_pixel_query.h"
 
+// 创建一个由本类显式拥有的 RenderingServer CanvasItem RID。
+// 直接调用方：submit/_draw_line_batch；顶层调用方：SpxPenMgr::flush_all。
+// Godot 规则：RID 不随 Node 自动释放，必须记录并在析构/清屏时 free()。
 RID SpxPenCanvas::_create_draw_item(const Ref<Texture2D> &p_texture, const Ref<Material> &p_material) {
 	RenderingServer *server = RenderingServer::get_singleton();
 	RID item = server->canvas_item_create();
@@ -125,8 +128,7 @@ void SpxPenCanvas::_draw_line_batch(int p_begin, int p_end) {
 		append_index(quad_index + 1);
 		append_index(quad_index + 3);
 
-		// Scratch uses round pen caps. A continuing stroke reuses the preceding
-		// endpoint cap, including when the segments are flushed in different frames.
+		// Scratch 笔迹使用圆形端帽；连续线段复用前一段终点端帽，跨帧提交也保持该规则。
 		if (command.draw_start_cap) {
 			append_disc(command.from, radius, command.color);
 		}
@@ -212,8 +214,7 @@ void SpxPenCanvas::add_stamp(AnimatedSprite2D *p_sprite, const Transform2D &p_tr
 	command.texture_repeat = p_sprite->get_texture_repeat_in_tree();
 	const Ref<Material> material = p_sprite->get_material();
 	if (material.is_valid()) {
-		// Share textures and shader code, but freeze all material parameters at
-		// the call site. Later effect changes must not alter queued stamps.
+		// 纹理和着色器代码可共享，但材质参数需在调用点冻结，后续特效变化不得修改已排队印章。
 		command.material = material->duplicate(false);
 	}
 	pending_commands.push_back(command);
@@ -231,12 +232,15 @@ SpxPenCanvas::~SpxPenCanvas() {
 void SpxPenSurface::_bind_methods() {
 }
 
+// 创建持久透明 SubViewport、命令画布和屏幕显示 Sprite2D。
+// 直接调用方：SpxPenMgr::on_awake；顶层调用方：Godot 主循环 start。
+// Godot 规则：子节点 add_child() 后归 SceneTree 所有；SubViewport 的 CLEAR_MODE/
+// UPDATE_MODE 决定内容保留与真正渲染时机，因此不能按普通 Node2D 绘制理解。
 void SpxPenSurface::initialize(const Size2i &p_size) {
 	ERR_FAIL_COND(render_target != nullptr);
 
-	// Scratch keeps pen pixels between the backdrop and all managed sprites.
-	// Use an absolute layer so the result does not depend on the scene-tree
-	// insertion order or a future parent z-index change.
+	// Scratch 画笔层位于背景和所有受管精灵之间；使用绝对 z 层级，避免结果受节点插入
+	// 顺序或父节点后续 z_index 变化影响。
 	set_z_as_relative(false);
 	set_z_index(0);
 
@@ -260,8 +264,7 @@ void SpxPenSurface::initialize(const Size2i &p_size) {
 	canvas_sprite->set_centered(true);
 	canvas_sprite->set_texture_filter(CanvasItem::TEXTURE_FILTER_NEAREST);
 	canvas_sprite->set_texture(render_target->get_texture());
-	// Transparent render targets store premultiplied RGB. Do not multiply it
-	// by alpha a second time when displaying the shared pen layer.
+	// 透明渲染目标存储预乘 RGB；显示共享画笔层时不能再次乘 alpha。
 	Ref<CanvasItemMaterial> material;
 	material.instantiate();
 	material->set_blend_mode(CanvasItemMaterial::BLEND_MODE_PREMULT_ALPHA);
@@ -281,7 +284,7 @@ void SpxPenSurface::set_canvas_size(const Size2i &p_size) {
 
 	canvas_size = next_size;
 	render_target->set_size(canvas_size);
-	// All commands use stage coordinates; the canvas centers them in the target.
+	// 所有命令使用舞台坐标，画布节点再把它们居中到离屏目标中。
 	canvas->set_position(Vector2(canvas_size) * 0.5f);
 	clear();
 }
@@ -317,8 +320,8 @@ void SpxPenSurface::flush() {
 		return;
 	}
 
-	// A second flush before rendering must retain the first batch and its
-	// pending clear. UPDATE_ONCE is reset by the renderer, not by submission.
+	// 渲染前再次 flush 必须保留首批命令及其待清屏状态；UPDATE_ONCE 由渲染器重置，
+	// 提交命令本身不会重置它。
 	const bool pending = _is_render_pending();
 	if (clear_requested || !pending) {
 		render_target->set_clear_mode(clear_requested ? SubViewport::CLEAR_MODE_ONCE : SubViewport::CLEAR_MODE_NEVER);
@@ -333,6 +336,10 @@ bool SpxPenSurface::_is_render_pending() const {
 	return RenderingServer::get_singleton()->viewport_get_update_mode(render_target->get_viewport_rid()) == RS::VIEWPORT_UPDATE_ONCE;
 }
 
+// 在需要参与感知时，把离屏纹理同步读回 CPU Image。
+// 直接调用方：SpxPenMgr::capture；顶层调用方：Go 颜色/透明度碰撞查询。
+// Godot 规则：RenderingServer 提交与 GPU 完成通常延迟到帧末；同步感知必须显式
+// draw/sync，且只在范围重叠时执行，以控制 GPU->CPU 读回成本。
 bool SpxPenSurface::capture(const Rect2 &p_query_bounds, SpxPixelQuery::Snapshot &r_snapshot) {
 	r_snapshot = SpxPixelQuery::Snapshot();
 	if (render_target == nullptr || !is_inside_tree()) {
@@ -348,8 +355,7 @@ bool SpxPenSurface::capture(const Rect2 &p_query_bounds, SpxPixelQuery::Snapshot
 	if (collision_image.is_null()) {
 		RenderingServer *server = RenderingServer::get_singleton();
 		if (_is_render_pending()) {
-			// Submit directly instead of flushing the global deferred-call queue:
-			// sensing must see this script's pen commands before the next frame.
+			// 直接提交渲染，而不清空全局延迟调用队列：感知必须在下一帧前看到本脚本的画笔命令。
 			canvas->force_update_transform();
 			CanvasItemMaterial::flush_changes();
 			server->draw(false);

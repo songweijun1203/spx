@@ -21,12 +21,16 @@ import (
 	"sync"
 )
 
+// node 是 Queue 使用的单向链表节点；弹出后会回收到共享 sync.Pool。
 type node[T any] struct {
 	value T
 	next  *node[T]
 }
 
-// Queue is thread-safe and supports insertion at either end. Its zero value is ready for use.
+// Queue 是支持首尾插入的线程安全链表队列，零值可直接使用。
+//
+// Coroutines 用它保存 WaitJob。链表使 current/deferred/round 队列可以 O(1) 整体拼接；
+// pool 复用高频任务节点，sortBuffer 复用稳定排序的临时切片。
 type Queue[T any] struct {
 	mu    sync.Mutex
 	head  *node[T]
@@ -37,8 +41,8 @@ type Queue[T any] struct {
 	sortBuffer []T
 }
 
-// Move appends every value from src to the receiving queue and empties src.
-// Concurrent moves between two queues must use a consistent direction.
+// Move 把 src 的全部节点 O(1) 追加到 q 尾部，并清空 src。
+// 两个 goroutine 若需要在同一对队列间并发 Move，必须保持一致方向以免锁顺序死锁。
 func (q *Queue[T]) Move(src *Queue[T]) {
 	if q == src {
 		return
@@ -66,14 +70,14 @@ func (q *Queue[T]) Move(src *Queue[T]) {
 	src.count = 0
 }
 
-// Count returns the number of values in the queue.
+// Count 返回当前元素数量。
 func (q *Queue[T]) Count() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return q.count
 }
 
-// PeekFront returns the first value without removing it.
+// PeekFront 查看队首但不移除；空队列返回 ok=false。
 func (q *Queue[T]) PeekFront() (value T, ok bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -83,7 +87,7 @@ func (q *Queue[T]) PeekFront() (value T, ok bool) {
 	return q.head.value, true
 }
 
-// SortStable orders values while preserving ties.
+// SortStable 就地稳定排序节点中的值；链表节点和拓扑保持不变。
 func (q *Queue[T]) SortStable(compare func(T, T) int) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -104,7 +108,7 @@ func (q *Queue[T]) SortStable(compare func(T, T) int) {
 	}
 }
 
-// Any reports whether a queued value satisfies match.
+// Any 判断是否至少一个队列值满足 match。
 func (q *Queue[T]) Any(match func(T) bool) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -116,7 +120,7 @@ func (q *Queue[T]) Any(match func(T) bool) bool {
 	return false
 }
 
-// PushBack adds value to the back of the queue.
+// PushBack 把值加入队尾。
 func (q *Queue[T]) PushBack(value T) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -132,7 +136,7 @@ func (q *Queue[T]) PushBack(value T) {
 	q.count++
 }
 
-// PushFront adds value to the front of the queue.
+// PushFront 把值加入队首；主线程优先任务使用该入口。
 func (q *Queue[T]) PushFront(value T) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -148,7 +152,7 @@ func (q *Queue[T]) PushFront(value T) {
 	q.count++
 }
 
-// PopFront removes and returns the front value. It panics if the queue is empty.
+// PopFront 移除并返回队首；空队列调用属于内部编程错误，会 panic。
 func (q *Queue[T]) PopFront() T {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -170,13 +174,14 @@ func (q *Queue[T]) PopFront() T {
 	return value
 }
 
-// NewQueue creates an empty queue.
+// NewQueue 创建带独立节点池的空队列。
 func NewQueue[T any]() *Queue[T] {
 	q := &Queue[T]{}
 	q.ensurePool()
 	return q
 }
 
+// ensurePool 使 Queue 零值也能延迟初始化节点池。
 func (q *Queue[T]) ensurePool() {
 	if q.pool == nil {
 		q.pool = &sync.Pool{New: func() any {
@@ -185,6 +190,7 @@ func (q *Queue[T]) ensurePool() {
 	}
 }
 
+// acquireNode 从池中取得并初始化节点。
 func (q *Queue[T]) acquireNode(value T) *node[T] {
 	q.ensurePool()
 	n := q.pool.Get().(*node[T])
@@ -193,6 +199,7 @@ func (q *Queue[T]) acquireNode(value T) *node[T] {
 	return n
 }
 
+// releaseNode 清除泛型值引用后回收节点，避免池长期持有业务对象。
 func (q *Queue[T]) releaseNode(n *node[T]) {
 	var zero T
 	n.value = zero

@@ -1,10 +1,16 @@
 var Module = null
 
 /**
+ * 项目文件的增量同步元数据。null 表示上次同步可能只完成了一部分，
+ * 下一次必须重新发送该路径。
  * @typedef {{ lastModified: number }} FileMeta - Timestamp in milliseconds since Unix epoch.
  * @typedef {{ [path: string]: FileMeta | null }} FilesMeta - Null entries need resync.
  */
 
+/**
+ * Web 运行器编排 Godot Engine、Go 逻辑 WASM、基础 engine.zip 和项目文件。
+ * 对外的 Init/Start/Stop 操作通过 taskTail 串行，避免重启与资源更新交叉执行。
+ */
 class GameRunner {
     constructor(config) {
         config = config || {};
@@ -17,6 +23,7 @@ class GameRunner {
         this.useProfiler = this.logLevel == LOG_LEVEL_VERBOSE;
         this.canvas = config.gameCanvas;
         this.assetURLs = config.assetURLs;
+        // 传给 engine.js 的 Godot WASM 配置；项目资源不放在这里。
         this.engineConfig = {
             executable: 'engine',
             unloadAfterInit: false,
@@ -29,6 +36,7 @@ class GameRunner {
         };
         this.recordingOnGameStart = config.recordingOnGameStart || false
         this.autoDownloadRecordedVideo = config.autoDownloadRecordedVideo || false
+        // 所有可变生命周期操作都链接到该 Promise 尾部。
         this.taskTail = Promise.resolve();
         this.workerMode = EnginePackMode == "worker"
         this.minigameMode = EnginePackMode == "minigame"
@@ -39,9 +47,12 @@ class GameRunner {
 
         profiler.enabled = this.useProfiler;
 
+        // Worker 模式用它把项目数据和自定义调用转发到 Godot PThread。
         this.workerMessageManager = new globalThis.WorkerMessageManager();
 
+        // pendingStops 让已经排队但尚未执行的停止请求也能阻止新的 init/start。
         this.pendingStops = 0;
+        // gameLifecycle 表示当前具体游戏局；底层 Engine 可以跨多局复用。
         this.gameLifecycle = null;
         this.logVerbose('Engine mode:', EnginePackMode)
 
@@ -53,12 +64,13 @@ class GameRunner {
         return this.enqueue(() => this.initEngine())
     }
 
-    // Call after InitEngine and before StartGame.
+    // InitGame 在 Engine 就绪后同步项目文件并编译脚本，尚不执行项目 main。
     async InitGame(files) {
         return this.enqueue(() => this.initGame(files))
     }
 
     async StartGame(options = {}) {
+        // 支持 Promise 配置，仍在真正取得队列执行权后等待其归一化结果。
         const inputSession = options && typeof options.then === 'function'
             ? Promise.resolve(options).then((resolved) => this.normalizeStartInput(resolved))
             : this.normalizeStartInput(options)
@@ -66,6 +78,7 @@ class GameRunner {
     }
 
     async ResetGame() {
+        // Reset 不要求输出录制结果；Stop 则在退出前完成输入录制。
         return this.enqueueStop(false)
     }
 
@@ -111,10 +124,12 @@ class GameRunner {
     }
 
     getInputSessionStatus() {
+        // 普通 Web 模式下转发到 ispx.wasm 注册的 syscall/js 函数。
         return this.callInputFunction('ispx_input_session_status')
     }
 
     async waitInputSessionCompleted(options = {}) {
+        // 轮询只观察状态，不推进帧；回放由 Godot 主循环继续驱动。
         this.ensureInputSessionSupported()
         if (options == null) options = {}
         if (typeof options !== 'object' || Array.isArray(options)) {
@@ -153,6 +168,7 @@ class GameRunner {
     }
 
     onRuntimeReset(code) {
+        // C++ runtime reset 与 Godot 整体退出都可以结束当前具体游戏局。
         this.completeGameLifecycle(code)
     }
 
@@ -168,6 +184,8 @@ class GameRunner {
         this.workerMessageManager.callWorkerFunction(name, ...args)
     }
 
+    // enqueue 把生命周期操作串到 taskTail。失败只拒绝当前调用，并恢复一条
+    // 可继续使用的队列尾，避免一个 rejected Promise 永久阻断后续操作。
     enqueue(task) {
         const result = this.taskTail.then(() => task());
         this.taskTail = result;
@@ -178,6 +196,7 @@ class GameRunner {
     }
 
     async enqueueStop(finishRecording, beforeStop = null) {
+        // 在停止任务排到队首前就增加计数，使并发提交的 init/start 能看见停止意图。
         this.pendingStops++;
         try {
             return await this.enqueue(() => this.stopGame(finishRecording, beforeStop));
@@ -187,6 +206,7 @@ class GameRunner {
     }
 
     async initEngine() {
+        // 本函数只启动可复用底层引擎；具体项目由 InitGame/StartGame 分阶段进入。
         if (this.pendingStops > 0) {
             this.logVerbose('Engine initialization skipped: stop requested');
             return;
@@ -196,11 +216,12 @@ class GameRunner {
             return;
         }
 
+        // Godot WASM、Go 逻辑 WASM 和基础资源包并行下载，缩短冷启动关键路径。
         const engineReady = profiler.profile('loadEngineWasm', () => this.loadEngineWasm());
         const logicReady = !this.workerMode && !this.minigameMode
             ? fetch(this.wasmURL('ispx.wasm')) : null;
         const packReady = fetch(this.assetURLs[this.packName]).then(response => response.arrayBuffer());
-        // Handle early rejections until these downloads are awaited.
+        // 在稍后 await 前先安装 rejection 观察者，避免浏览器报告未处理拒绝。
         if (logicReady) logicReady.catch(() => {});
         packReady.catch(() => {});
         await engineReady;
@@ -215,7 +236,9 @@ class GameRunner {
         this.onProgress(0.5);
         this.engine = new Engine(this.engineConfig);
         const engine = this.engine;
+        // 先安装占位和 gdspx_* 包装，Go/Godot 任一侧提前查询都不会得到 undefined。
         this.bindRuntimeCallbacks();
+        // 普通模式在 Godot init 前启动 Go 宿主；Worker 模式由 PThread 稍后完成。
         await profiler.profile('prepareRuntime', () => this.prepareRuntime(logicReady));
         this.onProgress(0.5);
 
@@ -223,6 +246,7 @@ class GameRunner {
 
         this.onProgress(0.6);
 
+        // engine.zip 是 Godot/SPX 基础资源，不是用户项目资源。
         await profiler.profile('unpackEngineData', () => packReady.then(data =>
             engine.unpackEngineData(this.persistentPath, this.packName, data)));
 
@@ -232,6 +256,7 @@ class GameRunner {
 
         this.onProgress(0.8);
 
+        // Engine.start 最终进入 Module.callMain，Godot 从此开始主循环。
         await profiler.profile('engine.start', () => engine.start({ args, canvas: this.canvas }));
 
         this.onProgress(1.0);
@@ -239,6 +264,7 @@ class GameRunner {
     }
 
     async loadEngineWasm() {
+        // 小游戏平台把 URL 交给适配层；浏览器模式预取 ArrayBuffer 给 Engine.init。
         const url = this.wasmURL('engine.wasm')
         if (this.minigameMode) {
             this.engineConfig.wasmEngine = url
@@ -248,6 +274,7 @@ class GameRunner {
     }
 
     bindRuntimeCallbacks() {
+        // Go webffi.Link 会覆盖占位入口；GdspxFuncs 则提供 Go -> Godot 的 JS ABI。
         window.go_wasm_init = function () { }
         window.gdspx_dispatch = function () { }
         const callbacks = new GdspxFuncs();
@@ -260,6 +287,7 @@ class GameRunner {
     }
 
     async prepareRuntime(logicReady) {
+        // 普通模式现在就实例化并运行 ispx.wasm 宿主；Worker 模式没有主线程 Go 实例。
         if (this.minigameMode) {
             GameGlobal.engine = this.engine;
             godotSdk.set_engine(this.engine);
@@ -273,6 +301,7 @@ class GameRunner {
     }
 
     async initRuntime(engine) {
+        // Godot WASM 已实例化但尚未启动主循环，在这里安装平台相关补充绑定。
         if (this.workerMode) {
             this.workerMessageManager.bindMainThreadCallbacks(engine)
         }
@@ -282,18 +311,20 @@ class GameRunner {
     }
 
     async initGame(files) {
+        // 先写入 Godot 虚拟文件系统，再只把脚本/JSON 交给 Go 构建器。
         await profiler.profile('updateEngineFiles', () => this.updateEngineFiles(files));
         await profiler.profile('buildGame', () => this.buildGame(files));
     }
 
     updateEngineFiles(files) {
+        // lastModified 相同的路径不重复跨 JS/WASM 复制；缺失路径显式从引擎删除。
         /** @type {Array<{ name: string, data: Uint8Array }>} */
         const updatedFiles = [];
         const previousMeta = this.projectFilesMeta;
         /** @type {FilesMeta} */
         const nextMeta = Object.create(null);
         for (const [path, { lastModified, content }] of Object.entries(files)) {
-            // ZIP archives may include directory entries.
+            // ZIP 可能包含目录条目；目录不能作为普通文件写入引擎 FS。
             if (path.endsWith('/')) {
                 continue;
             }
@@ -310,7 +341,7 @@ class GameRunner {
             this.engine.updateAssetsData(this.persistentPath, updatedFiles);
             this.engine.deleteAssetsData(this.persistentPath, removedPaths);
         } catch (error) {
-            // Retry all known paths after partial changes.
+            // 两个调用之间失败可能留下部分更新；把所有已知路径标为下次强制重发。
             const paths = Object.keys({ ...previousMeta, ...nextMeta });
             this.projectFilesMeta = Object.fromEntries(paths.map(path => [path, null]));
             throw error;
@@ -323,6 +354,7 @@ class GameRunner {
             this.logVerbose('Game build skipped: stop requested');
             return;
         }
+        // 图片和音频已经进入 Godot FS；构建器只需要 .spx 和 JSON。
         /** @type {{ [path: string]: Uint8Array }} */
         const nonAssetFiles = {};
         for (const [path, file] of Object.entries(files)) {
@@ -334,11 +366,13 @@ class GameRunner {
             const result = window.ispx_build(nonAssetFiles);
             if (result instanceof Error) throw result;
         } else {
+            // Worker 尚未加载 Go 逻辑 WASM，项目数据在 runProject 时一次发送。
             this.nonAssetFiles = nonAssetFiles;
         }
     }
 
     async startGame(inputSession) {
+        // restart 让底层 runtime 为新一局复位；随后创建可由 reset/exit 完成的 Promise。
         if (this.pendingStops > 0) {
             this.logVerbose('Game start skipped: stop requested');
             return;
@@ -365,10 +399,12 @@ class GameRunner {
             this.runLogicWasm()
         }
         if (this.workerMode) {
+            // Godot 主循环位于 PThread；项目数据到达后 Worker 才加载/启动 Go 逻辑。
             const threads = engine.getPThread()
             this.workerMessageManager.setPThreads(threads)
             this.workerMessageManager.callWorkerProjectDataUpdate(this.nonAssetFiles, this.assetURLs)
         } else {
+            // 普通模式把 FFI 指向 window，随后 ispx_start 解释/运行具体项目 main。
             Module = engine.rtenv;
             globalThis.FFI = self;
             const result = window.ispx_start(inputSession);
@@ -378,6 +414,7 @@ class GameRunner {
     }
 
     async stopGame(finishRecording, beforeStop = null) {
+        // 先冻结输入录制和宿主收尾工作，再请求 Go runtime 退出并等待 reset 回调。
         const lifecycle = this.gameLifecycle
         if (this.engine == null || lifecycle == null || lifecycle.completed) {
             this.logVerbose('No game is running')
@@ -423,6 +460,7 @@ class GameRunner {
     }
 
     beginGameLifecycle(inputSession) {
+        // 每局只有一个退出 Promise；底层 Engine 本身并不随正常 Stop 被销毁。
         if (this.gameLifecycle != null && !this.gameLifecycle.completed) {
             throw new Error('Game is already running')
         }
@@ -441,6 +479,7 @@ class GameRunner {
         return lifecycle
     }
 
+    // 最近调用方：Godot 退出、runtime reset 或启动失败处理；唤醒 stopGame() 的等待。
     completeGameLifecycle(code, lifecycle = this.gameLifecycle) {
         if (lifecycle == null || lifecycle.completed) return false
         lifecycle.completed = true
@@ -449,6 +488,7 @@ class GameRunner {
     }
 
     restart() {
+        // 请求已启动的 runtime 创建新一局，不重新实例化 Godot WASM。
         this.callRuntime('_gdspx_ext_request_restart')
     }
 
@@ -458,6 +498,7 @@ class GameRunner {
     }
 
     async loadLogicWasm(logicReady) {
+        // 这里只实例化 ispx.wasm；runLogicWasm 才启动 Go main 和 syscall/js。
         const url = this.wasmURL('ispx.wasm')
         this.go = new Go();
         if (this.minigameMode) {
@@ -481,7 +522,7 @@ class GameRunner {
         this.go.exit = (code) => {
             this.notifyExit(code);
         };
-        // go.run resolves when the runtime exits.
+        // go.run 返回 Promise，但宿主需要它常驻；退出通过 go.exit/notifyExit 上报。
         this.go.run(this.logicWasmInstance);
     }
 
@@ -491,6 +532,7 @@ class GameRunner {
     }
 
     notifyExit(code) {
+        // 同时通知页面内回调、DOM 监听者和 iframe 父页面，兼容三种宿主接入方式。
         if (typeof window.onGoWasmExit === "function") {
             window.onGoWasmExit(code);
         }
@@ -503,6 +545,7 @@ class GameRunner {
     }
 
     normalizeStartInput(options) {
+        // StartGame 的外层 options 与底层 Go 输入会话描述在这里分离。
         if (options == null) options = {}
         if (typeof options !== 'object' || Array.isArray(options)) {
             throw new TypeError('StartGame options must be an object')
@@ -517,7 +560,7 @@ class GameRunner {
             throw new TypeError('Input session must be an object')
         }
         if (input.mode === 'record') {
-            // Default for hosts that bypass the runner.
+            // 为直接实例化 GameRunner 的宿主保留默认 FPS；runner 门面通常会先补齐。
             const fps = input.fps == null ? 30 : input.fps
             if (!Number.isFinite(fps) || fps <= 0) {
                 throw new RangeError('Input recording FPS must be a positive finite number')
@@ -531,6 +574,7 @@ class GameRunner {
             const objectTag = Object.prototype.toString.call(input.data)
             let data
             if (ArrayBuffer.isView(input.data)) {
+                // 切片复制隔离宿主后续修改，并只保留视图覆盖的字节范围。
                 data = new Uint8Array(input.data.buffer, input.data.byteOffset, input.data.byteLength).slice()
             } else if (objectTag === '[object ArrayBuffer]') {
                 data = input.data.slice(0)
@@ -559,6 +603,7 @@ class GameRunner {
     }
 
     callInputFunction(name, ...args) {
+        // Go API 可能以 Error 返回值表达同步失败，统一转换为 JS throw。
         this.ensureInputSessionSupported()
         const fn = window[name]
         if (typeof fn !== 'function') {
@@ -574,6 +619,7 @@ class GameRunner {
     }
 
     async waitInputSessionStarted(input, timeoutMs = 30000) {
+        // ispx_start 返回只表示启动已提交；等待 Go Game 真正取得输入会话所有权。
         if (input == null) return
         const startedAt = Date.now()
         while (true) {

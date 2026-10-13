@@ -32,6 +32,8 @@
 
 #include "scene/resources/font.h"
 
+// Godot 全局 ThemeDB 字体桥。直接调用方是 SpxResMgr；顶层调用方是 Go game_build 的
+// 项目字体应用与游戏 reset。Ref 参数按引用计数共享资源，修改 ThemeDB 必须在主线程进行。
 void spx_get_theme_fonts(Ref<Font> &r_default_font, Ref<Font> &r_fallback_font);
 void spx_set_theme_fonts(const Ref<Font> &p_default_font, const Ref<Font> &p_fallback_font);
 void spx_set_project_theme_font(const Ref<Font> &p_font);

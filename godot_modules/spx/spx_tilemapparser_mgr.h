@@ -40,46 +40,43 @@ class TileMapLayer;
 class TileSetAtlasSource;
 class TileData;
 
-// Manager for loading TileMap resources from JSON files
-// Provides runtime API for loading TileMaps without Godot's import process
-// Uses SpxResMgr for texture loading (SPX direct loading)
-//
-// Architecture:
-//   JSON -> SpxTileMapData (via from_json) -> Godot Objects (via this manager)
-//   Godot Objects -> SpxTileMapData (via to_json) -> JSON (for export plugin)
-//
+// 从 SPX JSON 在运行期重建 Godot TileSet/TileMapLayer 的 Manager，无需 Godot 导入流程。
+// 数据链：JSON -> SpxTileMapData -> Godot Object；导出工具可执行反向序列化。
+// 直接调用方：生成的 spx_tilemapparser_* ABI 包装和 SpxEngine 生命周期。
+// 顶层调用方：Go Load/UnloadTilemap API、游戏 reset 或 Godot 退出。
+// Godot 规则：Ref<TileSet> 由引用计数持有，add_source 后 TileSet 持有 atlas source；
+// TileData* 只借用。TileMapLayer add_child 后归 SceneTree 所有，缓存中的裸指针不拥有
+// 节点，卸载时应 queue_free 而不是立即 memdelete。
 class SpxTilemapparserMgr : public SpxManager {
 
 private:
-	// Cache of loaded TileSets by tilemap name
-	HashMap<String, Ref<TileSet>> tileset_cache;
+	HashMap<String, Ref<TileSet>> tileset_cache; // 地图名到共享 TileSet 的强引用缓存。
 
-	// Cache of loaded TileMapLayers by tilemap name
-	HashMap<String, Vector<TileMapLayer *>> tilemap_layers;
+	HashMap<String, Vector<TileMapLayer *>> tilemap_layers; // 地图名到已挂树层节点的借用指针索引。
 
 private:
-	// Godot object creation methods (using parsed data structures)
+	// 解析后的数据到 Godot 对象的内部构建步骤，直接调用方均为 load_tilemap。
 	Ref<TileSet> _create_tileset(const SpxTileSetData &data, const String &base_path);
 	void _create_atlas_source(Ref<TileSet> tileset, const SpxTileSetSourceData &data, const String &base_path);
 	void _setup_tile_physics(TileData *tile_data, const SpxTileData &data);
 	TileMapLayer *_create_tilemap_layer(const SpxTileMapLayerData &data, Ref<TileSet> tileset, const Vector2 &node_offset);
 
-	// Helper methods
+	// 路径/Base64 辅助函数不持有资源。
 	String _get_base_path(const String &json_path);
 	Vector<uint8_t> _base64_decode(const String &base64_str);
 
 public:
-	// Lifecycle methods
+	// 生命周期直接由 SpxEngine 调用；顶层来自 reset 或 Godot 主循环 destroy。
 	void on_destroy() override;
 	void on_reset(int reset_code) override;
 
 public:
-	// Main API
+	// SPX_BIND 直接由 ABI 调用；顶层来自 Go TilemapparserMgr。
 	SPX_BIND void load_tilemap(GdString json_path);
 	SPX_BIND void unload_tilemap(GdString name);
 	SPX_BIND void destroy_all_tilemaps();
 
-	// Query API
+	// 查询接口。直接调用方：生成 ABI；顶层调用方：Go 侧地图存在性/层数查询。
 	SPX_BIND GdBool has_tilemap(GdString name);
 	SPX_BIND GdInt get_tilemap_layer_count(GdString name);
 };

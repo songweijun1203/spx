@@ -102,6 +102,8 @@ GdInt SpxSprite::get_trigger_mask() {
 }
 
 void SpxSprite::set_collider_rect(GdVec2 p_center, GdVec2 p_size) {
+	// 直接调用方：SpxSpriteMgr/批量物理同步；顶层调用方：Go Sprite 碰撞体配置。
+	// Godot Shape2D 用 Ref 引用计数持有，CollisionShape2D 取得引用后无需手工释放。
 	Ref<RectangleShape2D> rect = memnew(RectangleShape2D);
 	rect->set_size(p_size);
 	apply_shape(collider2d, rect, p_center);
@@ -192,6 +194,8 @@ CollisionShape2D *SpxSprite::get_collider(bool p_is_trigger) {
 }
 
 GdBool SpxSprite::check_collision(SpxSprite *p_other, GdBool p_is_src_trigger, GdBool p_is_dst_trigger) {
+	// 直接调用方：SpxSpriteMgr::check_collision；顶层调用方：Go Touching 查询。
+	// PhysicsServer2D 查询使用当前已同步的形状变换，通常应在物理帧边界读取。
 	if (p_other == nullptr) {
 		return false;
 	}
@@ -237,12 +241,14 @@ bool SpxSprite::_can_enable_collider() const {
 }
 
 void SpxSprite::_update_collider_disabled_state() {
+	// Godot 规则：禁用 CollisionShape2D 会从物理空间移除形状；节点本身仍留在场景树。
 	if (collider2d != nullptr) {
 		collider2d->set_disabled(!_can_enable_collider());
 	}
 }
 
 void SpxSprite::_update_trigger_disabled_state() {
+	// 背景永不启用 Area2D trigger，防止舞台背景参与普通精灵触发事件。
 	if (trigger2d != nullptr) {
 		trigger2d->set_disabled(!(_is_trigger_enabled && is_visible()));
 	}

@@ -34,14 +34,19 @@ const (
 // Scratch shares one limit across all sprites, including hidden clones.
 const maxClones = 300
 
-// shapeManager tracks active shapes and reusable frame buffers.
+// shapeManager 管理当前舞台 Shape 的顺序、克隆额度、延迟销毁和帧级复用缓冲。
+// items 的顺序同时决定默认渲染层和事件目标顺序；named 是按需构建的精灵名称索引。
 type shapeManager struct {
-	cloneCount             int
-	pendingClones          int
-	items                  []Shape
-	named                  map[string][]*SpriteImpl
-	tempItems              []Shape
-	destroyItems           []Shape
+	// cloneCount 已进入 items，pendingClones 已预占额度但仍在初始化。
+	cloneCount    int
+	pendingClones int
+	// items 是权威活动列表；tempItems 为遍历提供不受中途增删影响的稳定快照。
+	items     []Shape
+	named     map[string][]*SpriteImpl
+	tempItems []Shape
+	// destroyItems 延迟到代理同步批次统一向 Godot 发送删除 ID。
+	destroyItems []Shape
+	// 以下缓冲用于稳定、可复现地计算同帧多个说话气泡的布局。
 	textBubbles            []*textBubble
 	activeTextBubbles      []*textBubble
 	sayLayouts             []ui.SayBubbleLayout
@@ -49,6 +54,7 @@ type shapeManager struct {
 }
 
 func resetSlice[T any](items []T, initialCap int) []T {
+	// clear 释放旧元素引用，同时保留底层容量供下一局/下一帧复用。
 	if items == nil && initialCap > 0 {
 		return make([]T, 0, initialCap)
 	}
@@ -56,7 +62,7 @@ func resetSlice[T any](items []T, initialCap int) []T {
 	return items[:0]
 }
 
-// init prepares internal buffers while preserving existing allocations when possible.
+// init 清空场景索引和计数，同时尽量保留高频切片分配。
 func (s *shapeManager) init() {
 	s.cloneCount = 0
 	s.pendingClones = 0
@@ -70,13 +76,13 @@ func (s *shapeManager) init() {
 	s.nextTextBubbleLayoutID = 0
 }
 
-// reset clears the scene and reuses frame buffers.
+// reset 先清除 Godot 侧全部精灵，再复位 Go 侧场景和缓冲。
 func (s *shapeManager) reset() {
 	engine.ClearAllSprites()
 	s.init()
 }
 
-// flushActivate advances active non-sprite, non-bubble shapes for the current frame.
+// flushActivate 推进 Monitor 等非精灵 Shape；精灵和气泡由各自同步阶段处理。
 func (s *shapeManager) flushActivate(items []Shape) {
 	if len(items) == 0 {
 		return
@@ -98,6 +104,7 @@ func (s *shapeManager) flushActivate(items []Shape) {
 }
 
 func (s *shapeManager) layoutTextBubbles(items []Shape) {
+	// 先按稳定 layoutID 收集可见气泡；拓扑或输入不变时跳过求解。
 	s.textBubbles = resetSlice(s.textBubbles, 0)
 	s.sayLayouts = resetSlice(s.sayLayouts, 0)
 
@@ -153,6 +160,7 @@ func (s *shapeManager) layoutTextBubbles(items []Shape) {
 }
 
 func (s *shapeManager) collectProxyUpdates(items []Shape, buffer *engine.SpriteSyncBuffer) {
+	// 只收集 SpriteImpl；Monitor、Measure 和气泡没有 SpriteSyncBuffer 代理记录。
 	for _, item := range items {
 		if sprite, ok := item.(*SpriteImpl); ok {
 			sprite.collectProxyUpdate(buffer)
@@ -160,7 +168,7 @@ func (s *shapeManager) collectProxyUpdates(items []Shape, buffer *engine.SpriteS
 	}
 }
 
-// flushDestroy performs cleanup for shapes that have been scheduled for destruction.
+// flushDestroy 把延迟销毁的精灵 ID 写入同步缓冲并断开 Go 代理引用。
 func (s *shapeManager) flushDestroy(buffer *engine.SpriteSyncBuffer) {
 	if len(s.destroyItems) == 0 {
 		return
@@ -176,7 +184,7 @@ func (s *shapeManager) flushDestroy(buffer *engine.SpriteSyncBuffer) {
 	s.destroyItems = resetSlice(s.destroyItems, 0)
 }
 
-// add adds a shape immediately to the active list.
+// add 把 Shape 立即加入活动列表，并使按名称缓存失效。
 func (s *shapeManager) add(shape Shape) {
 	if sprite, ok := shape.(*SpriteImpl); ok && sprite.IsCloned() {
 		s.cloneCount++
@@ -192,7 +200,7 @@ func (s *shapeManager) add(shape Shape) {
 	clear(s.named)
 }
 
-// remove schedules a shape for destruction at the end of the frame.
+// remove 只登记延迟销毁；真正的 Godot 节点删除在 flushDestroy 批次完成。
 func (s *shapeManager) remove(shape Shape) {
 	s.destroyItems = append(s.destroyItems, shape)
 }
@@ -216,8 +224,10 @@ func (s *shapeManager) addClonedShape(src, clone Shape) {
 	s.updateRenderLayers()
 }
 
-// reserveClone includes clones still running initialization code, which can
-// yield or create more clones before they enter the active shape list.
+// reserveClone 为尚未进入活动列表的克隆预占名额。
+//
+// 直接调用方：createRuntimeClone；总体流程调用方：精灵脚本的 Clone API。克隆初始化
+// 可能挂起或继续创建克隆，pendingClones 可防止这些对象绕过全局 maxClones 限制。
 func (s *shapeManager) reserveClone() bool {
 	if s.cloneCount+s.pendingClones >= maxClones {
 		return false
@@ -227,7 +237,7 @@ func (s *shapeManager) reserveClone() bool {
 	return true
 }
 
-// removeShape removes a shape from the active list and schedules it for destruction.
+// removeShape 从活动顺序删除对象、更新克隆计数，并安排代理延迟销毁。
 func (s *shapeManager) removeShape(child Shape) {
 	idx := s.findShapeIndex(child)
 	if idx < 0 {
@@ -243,7 +253,7 @@ func (s *shapeManager) removeShape(child Shape) {
 	s.updateRenderLayers()
 }
 
-// activateShape moves a shape to the end of the active list.
+// activateShape 把对象移到最前显示端，并重算默认渲染层。
 func (s *shapeManager) activateShape(child Shape) {
 	idx := s.findShapeIndex(child)
 	if idx < 0 || idx == len(s.items)-1 {
@@ -299,7 +309,7 @@ func (s *shapeManager) all() []Shape {
 	return s.items
 }
 
-// getTempShapes returns a copy of all active shapes in a temporary buffer.
+// getTempShapes 复制活动列表，避免脚本在遍历中增删 Shape 破坏当前帧。
 func (s *shapeManager) getTempShapes() []Shape {
 	s.tempItems = sliceutil.CopyInto(s.tempItems, s.items, 50)
 	return s.tempItems
@@ -311,6 +321,7 @@ func (s *shapeManager) count() int {
 }
 
 func (s *shapeManager) spritesNamed(name string) []*SpriteImpl {
+	// 查询结果包含主实例与克隆；场景顺序变化时 add/remove 会清空缓存。
 	if len(s.items) == 0 {
 		return nil
 	}
