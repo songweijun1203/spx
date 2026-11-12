@@ -7,11 +7,11 @@ via sourceUrl -> run the suite pinned to that version -> poll to a terminal
 state -> report green/red. The rc prerelease is deleted on every exit path.
 
 Required environment:
-  SPXBENCH_URL        spxbench base URL, e.g. https://spxbench.qiniu.io
   SPXBENCH_API_TOKEN  spxbench admin bearer token
   ZIP_PATH            path to the built spx_web.zip
   RC_VERSION          candidate version, e.g. 4.0.2-rc.43192600496.1
 Optional:
+  SPXBENCH_URL        spxbench base URL (default: https://spxbench.qiniu.io)
   SUITE_NAME          gate suite name (default: spx; cross-repo contract)
   RUN_TIMEOUT_MINUTES overall budget (default: 30)
   GITHUB_REPOSITORY / GITHUB_SHA  provided by Actions; fall back to gh/git
@@ -25,6 +25,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+# Public instance; override with SPXBENCH_URL to point elsewhere. Kept as a
+# default (not a secret/variable) so job logs print readable detail links.
+DEFAULT_SPXBENCH_URL = "https://spxbench.qiniu.io"
 
 POLL_INTERVAL_SECONDS = 30
 BUSY_RETRY_SECONDS = 120
@@ -145,51 +149,61 @@ def delete_rc_release(rc_tag):
         log("rc deletion failed; ignore if creation never completed, otherwise delete manually")
 
 
-def main():
-    spxbench_url = require_env("SPXBENCH_URL").rstrip("/")
-    token = require_env("SPXBENCH_API_TOKEN")
-    zip_path = require_env("ZIP_PATH")
-    rc_version = require_env("RC_VERSION")
-    suite_name = os.environ.get("SUITE_NAME", "").strip() or "spx"
-    timeout_minutes = int(os.environ.get("RUN_TIMEOUT_MINUTES", "").strip() or 30)
-    rc_tag = f"v{rc_version}"
-    deadline = time.monotonic() + timeout_minutes * 60
+class Validation:
+    """One dry-run validation flow: shelf -> suite -> install -> run -> verdict.
 
-    try:
-        # Creation is inside the try: gh release create is multi-step and can
-        # fail after the remote release already exists; finally must clean it.
-        create_rc_release(rc_tag, zip_path, commit_sha())
-        # 2/7 resolve the gate suite by name: ids are per-database, names are the contract.
-        log(f"2/7 looking up suite {suite_name!r}")
-        status, body = api(f"{spxbench_url}/api/suites", token)
+    Steps 1 and 7 stay module-level so the cleanup scope covers failures of
+    creation itself; steps 2-6 are methods sharing one constructed context.
+    """
+
+    def __init__(self):
+        self.spxbench_url = (os.environ.get("SPXBENCH_URL") or DEFAULT_SPXBENCH_URL).strip().rstrip("/")
+        self.token = require_env("SPXBENCH_API_TOKEN")
+        self.zip_path = require_env("ZIP_PATH")
+        self.rc_version = require_env("RC_VERSION")
+        self.suite_name = os.environ.get("SUITE_NAME", "").strip() or "spx"
+        self.timeout_minutes = int(os.environ.get("RUN_TIMEOUT_MINUTES", "").strip() or 30)
+        self.rc_tag = f"v{self.rc_version}"
+        self.deadline = time.monotonic() + self.timeout_minutes * 60
+
+    def api(self, path, method="GET", payload=None):
+        return api(f"{self.spxbench_url}{path}", self.token, method=method, payload=payload)
+
+    def resolve_suite(self):
+        # ids are per-database, names are the cross-repo contract.
+        log(f"2/7 looking up suite {self.suite_name!r}")
+        status, body = self.api("/api/suites")
         if status != 200:
             raise ValidationError(f"list suites failed: HTTP {status}: {body}")
-        suite_id = find_suite_id(body.get("suites"), suite_name)
+        suite_id = find_suite_id(body.get("suites"), self.suite_name)
         if suite_id is None:
             available = ", ".join(sorted((s.get("name") or "") for s in body.get("suites") or []))
-            raise ValidationError(f"no suite named {suite_name!r}; available: {available or '(none)'}")
+            raise ValidationError(f"no suite named {self.suite_name!r}; available: {available or '(none)'}")
         log(f"   suite id={suite_id}")
+        return suite_id
 
-        # 3/7 register the candidate: spxbench downloads it from the rc shelf.
+    def register_candidate(self):
+        # spxbench downloads the candidate from the rc shelf.
         asset_url = (f"https://github.com/{repository_name()}"
-                     f"/releases/download/{rc_tag}/spx_web.zip")
+                     f"/releases/download/{self.rc_tag}/spx_web.zip")
         log(f"   candidate package: {asset_url}")
-        log(f"3/7 registering version {rc_version} (server-side download takes ~15s)")
-        status, body = api(f"{spxbench_url}/api/runtime-versions", token, method="POST",
-                           payload={"action": "install", "kind": "spx",
-                                    "version": rc_version, "sourceUrl": asset_url})
+        log(f"3/7 registering version {self.rc_version} (server-side download takes ~15s)")
+        status, body = self.api("/api/runtime-versions", method="POST",
+                                payload={"action": "install", "kind": "spx",
+                                         "version": self.rc_version, "sourceUrl": asset_url})
         if status != 200:
             raise ValidationError(f"install failed: HTTP {status}: {body}")
         digest = next((item.get("digest") for item in body.get("versions", [])
-                       if item.get("kind") == "spx" and item.get("version") == rc_version), "")
+                       if item.get("kind") == "spx" and item.get("version") == self.rc_version), "")
         log(f"   installed, digest={digest}")
 
-        # 4/7 start the pinned suite run; a busy slot (409) retries until deadline.
-        log(f"4/7 starting suite run (suite={suite_id}, spxVersion={rc_version})")
-        query = urllib.parse.urlencode({"suite": suite_id, "spxVersion": rc_version})
+    def start_run(self, suite_id):
+        # A busy slot (409) retries until deadline; permanent rejections fail now.
+        log(f"4/7 starting suite run (suite={suite_id}, spxVersion={self.rc_version})")
+        query = urllib.parse.urlencode({"suite": suite_id, "spxVersion": self.rc_version})
         job_id = None
         while job_id is None:
-            status, body = api(f"{spxbench_url}/__e2e/api/run?{query}", token, method="POST")
+            status, body = self.api(f"/__e2e/api/run?{query}", method="POST")
             if status == 200:
                 job_id = body.get("jobId")
             elif status == 409:
@@ -197,33 +211,34 @@ def main():
                     detail = body if isinstance(body, str) else json.dumps(body)
                     raise ValidationError(f"run rejected: {detail.strip()}")
                 log(f"   run slot busy (409), retrying in {BUSY_RETRY_SECONDS}s")
-                if time.monotonic() >= deadline:
+                if time.monotonic() >= self.deadline:
                     raise ValidationError("timed out waiting for a free run slot")
                 time.sleep(BUSY_RETRY_SECONDS)
             else:
                 raise ValidationError(f"run failed: HTTP {status}: {body}")
         log(f"   job #{job_id} accepted")
+        return job_id
 
-        # 5/7 poll until our job reaches a terminal state.
+    def await_job(self, job_id):
         log(f"5/7 polling job state (every {POLL_INTERVAL_SECONDS}s)")
-        state = {}
         while True:
-            status, state = api(f"{spxbench_url}/__e2e/api/state?job={job_id}", token)
+            status, state = self.api(f"/__e2e/api/state?job={job_id}")
             if status != 200:
                 raise ValidationError(f"state read failed: HTTP {status}: {state}")
             if not state.get("running") and state.get("jobId") == job_id:
-                break
-            if time.monotonic() >= deadline:
-                raise ValidationError(f"job #{job_id} did not finish within {timeout_minutes} minutes")
+                return state
+            if time.monotonic() >= self.deadline:
+                raise ValidationError(f"job #{job_id} did not finish within {self.timeout_minutes} minutes")
             log(f"   progress {state.get('completed')}/{state.get('total')} "
                 f"passed={state.get('passed')} failed={state.get('failed')}")
             time.sleep(POLL_INTERVAL_SECONDS)
 
-        # 6/7 verdict: the job's own terminal verdict decides; the case list only adds detail.
+    def report(self, job_id, state):
+        # The job's own terminal verdict decides; the case list only adds detail.
         total, passed, failed = state.get("total"), state.get("passed"), state.get("failed")
         log(f"6/7 result: summary={state.get('summary') or '(none)'} total={total} "
             f"passed={passed} failed={failed}")
-        log(f"   details: {spxbench_url}/__e2e?job={job_id}")
+        log(f"   details: {self.spxbench_url}/__e2e?job={job_id}")
         failures = failing_cases(state)
         if failures:
             log("   failing cases:")
@@ -231,11 +246,26 @@ def main():
                 log(f"     - {case.get('name')} [{case.get('status')}]")
         problems = job_problems(state)
         if problems:
-            raise ValidationError(f"candidate {rc_version} failed suite {suite_name!r}: "
+            raise ValidationError(f"candidate {self.rc_version} failed suite {self.suite_name!r}: "
                                   + "; ".join(problems))
-        log(f"   all green: {rc_version} passed suite {suite_name!r} ({total} cases)")
-    finally:
-        delete_rc_release(rc_tag)
+        log(f"   all green: {self.rc_version} passed suite {self.suite_name!r} ({total} cases)")
+
+    def run(self):
+        try:
+            # Creation is inside the try: gh release create is multi-step and can
+            # fail after the remote release already exists; finally must clean it.
+            create_rc_release(self.rc_tag, self.zip_path, commit_sha())
+            suite_id = self.resolve_suite()
+            self.register_candidate()
+            job_id = self.start_run(suite_id)
+            state = self.await_job(job_id)
+            self.report(job_id, state)
+        finally:
+            delete_rc_release(self.rc_tag)
+
+
+def main():
+    Validation().run()
 
 
 if __name__ == "__main__":

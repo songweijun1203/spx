@@ -1,8 +1,24 @@
+# =====================================================================
+# Release 工作流：SPX 发布的总入口
+#
+# 触发方式：仅手动（Actions 页面 → Release → Run workflow）。
+# 一次运行只做一类事，由 operation 参数决定走哪条路线：
+#   dry-run          演练：构建 + spxbench e2e 校验，不发布任何正式产物
+#   publish-runtime  只发布 Godot 运行时资产包（runtime-v*）
+#   publish-release  正式发布：runtime + SPX 产品 + npm
+#   publish-dev-npm  发布开发版 npm 包（只允许 dev 分支）
+#
+# 心智模型（读全文前先记住）：
+#   每个 job = 一台独立虚拟机，跑完即销毁；
+#   job 之间只有两条通道——artifact（传文件）和 outputs（传字符串）。
+# =====================================================================
 name: Release
 
 on:
   workflow_dispatch:
     inputs:
+      # 网页上点 Run workflow 时填的三个框，就是下面这三项。
+      # 文件内任何位置都可以用 ${{ inputs.名字 }} 读取。
       release_tag:
         description: 'SPX release tag declared by this commit; required except for publish-dev-npm'
         required: false
@@ -24,54 +40,97 @@ on:
           - publish-release
           - publish-dev-npm
 
+# 全局默认权限：只读（最小权限原则）。
+# 需要写仓库权限的 job（建/删 release）必须自己单独声明 contents: write。
 permissions:
   contents: read
 
+# 并发锁：同一时刻整个仓库只允许一个 Release 运行。
+# cancel-in-progress: false = 后触发的那个排队等待，不会杀掉正在跑的。
 concurrency:
   group: spx-release
   cancel-in-progress: false
 
 jobs:
+  # ===================================================================
+  # 1) build-release —— 构建所有发布产物（真正干活的"外包"）
+  #
+  # 注意这个 job 没有 steps，用 uses 整台委托给 build_release.yml，
+  # 那个文件里才是具体子 job：校验输入(plan-release)、检查源码、
+  # 编译 Godot 运行时、打 web/macos/windows/linux 包、assemble 汇总。
+  #
+  # 它给下游留两样东西：
+  #   文件通道：artifact  spx-product-release-<version>（内含 spx_web.zip）
+  #   字符串通道：outputs version / runtime_state / release_tag 等
+  # ===================================================================
   build-release:
     name: Build release artifacts
     if: ${{ inputs.operation != 'publish-dev-npm' }}
     uses: ./.github/workflows/build_release.yml
     with:
+      # 调用外包时传的"参数"，把网页上填的三个 inputs 原样递进去
       operation: ${{ inputs.operation }}
       release_tag: ${{ inputs.release_tag }}
       platforms: ${{ inputs.platforms }}
 
+  # ===================================================================
+  # 2) validate-e2e —— 发布前质量门禁（本 PR 新增，dry-run 专属）
+  #
+  # 作用：把刚构建出来的候选包交给 spxbench 平台，用浏览器回放真实
+  # 跑一遍 spx 测试集，红绿灯决定本次演练成败。
+  # 为什么中间要过一道"临时 release"：Actions runner 是临时虚拟机，
+  # spxbench 服务器够不着它的磁盘；而 release 资产是匿名可下载的
+  # 公开 URL，所以先"上架"让服务器来"取货"，取完下架。
+  # ===================================================================
   validate-e2e:
     name: Validate candidate against spxbench e2e suite
-    needs: build-release
+    needs: build-release        # 执行顺序：必须等构建 job 结束
     if: ${{ !cancelled() && inputs.operation == 'dry-run' }}
     runs-on: ubuntu-22.04
     permissions:
-      contents: write
+      contents: write           # 要在本仓库创建/删除临时 rc prerelease
     env:
-      SPXBENCH_URL: ${{ secrets.SPXBENCH_URL }}
+      # 平台地址在脚本里有默认值（公开信息，不走 secrets/vars，日志不打码）；
+      # token 是真机密，放 Secrets，fork 和上游要各自配置一遍
       SPXBENCH_API_TOKEN: ${{ secrets.SPXBENCH_API_TOKEN }}
+      # 候选版本号 = 正式版本-rc.本次run编号.第几次重跑。
+      # 加 run_attempt 的原因：重跑(re-run)时 run_id 不变，不加的话
+      # 第二次会命中 spxbench 对已注册版本的缓存，测的就不是新包了。
       RC_VERSION: ${{ needs.build-release.outputs.version }}-rc.${{ github.run_id }}.${{ github.run_attempt }}
     steps:
+      # 虚拟机开机是空盘：先把仓库代码拉下来，才有脚本文件可执行
       - name: Check out release scripts
         uses: actions/checkout@v7
         with:
           persist-credentials: false
 
+      # 文件通道"收货"：取回 build-release（那台已销毁的虚拟机）上传的
+      # artifact，解压到 dist/。dist/spx_web.zip 从这一步起才存在于本机。
       - name: Download assembled SPX product release
         uses: actions/download-artifact@v8
         with:
           name: spx-product-release-${{ needs.build-release.outputs.version }}
           path: dist
 
+      # 主角：脚本内完成七步（详见 validate_e2e.py 注释）
+      #   1/7 挂货架（gh release create，资产重命名为 spx_web.zip）
+      #   2/7 按名字查 spxbench 测试集 id
+      #   3/7 POST install + sourceUrl → spxbench 服务器自己下载候选包
+      #   4/7 POST run 指定 rc 版本跑测试集（插槽忙则重试；永久错误立即失败）
+      #   5/7 带 job id 轮询直到终态
+      #   6/7 红绿灯判定（summary/lastError/完成数/用例列表四关全过才算绿）
+      #   7/7 finally 拆货架（任何退出路径都执行）
       - name: Run e2e validation
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          ZIP_PATH: dist/spx_web.zip
-          GITHUB_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}   # 本 job 的临时身份证，gh 命令免登录用
+          ZIP_PATH: dist/spx_web.zip      # 上一步领到的候选包路径
+          GITHUB_SHA: ${{ github.sha }}   # rc release 钉住的提交
         run: python3 .github/scripts/release/validate_e2e.py
 
+      # 兜底拆货架：脚本进程若被杀（人为取消时 SIGTERM 不会执行 Python 的
+      # finally）或死在创建阶段（release 建了一半），由这一步补删。
+      # gh release delete 幂等：货架本来不存在时 || true 静默通过。
       - name: Remove rc prerelease if the job failed or was canceled
         if: ${{ failure() || cancelled() }}
         shell: bash
@@ -80,6 +139,12 @@ jobs:
           RC_TAG: v${{ env.RC_VERSION }}
         run: gh release delete "$RC_TAG" --cleanup-tag --yes || true
 
+  # ===================================================================
+  # 3) 以下各 publish-* / validate-* job 只在对应 operation 下运行。
+  #    dry-run 时它们全部 skipped——页面上看到一排灰色"跳过"不是错误。
+  # ===================================================================
+
+  # 发布或复用 Godot 运行时资产包（runtime-v*，不可变）
   publish-runtime:
     name: Publish or reuse runtime release
     needs: build-release
@@ -88,6 +153,8 @@ jobs:
     permissions:
       contents: write
     steps:
+      # 注意这几个步骤的 if：runtime_state == 'missing'（需要新构建）才执行。
+      # 若运行时已公开存在（ready），整个 job 只剩最后一步直接复用。
       - name: Check out release source for the publish guard
         if: needs.build-release.outputs.runtime_state == 'missing'
         uses: actions/checkout@v7
@@ -129,6 +196,7 @@ jobs:
           fi
           python3 .github/scripts/release/publish.py runtime
 
+  # 创建 SPX 产品的 release 草稿（draft=true，最后一步才转正）
   prepare-spx-release:
     name: Prepare SPX release draft
     needs: [build-release, publish-runtime]
@@ -157,6 +225,7 @@ jobs:
           REPOSITORY: ${{ needs.build-release.outputs.release_repository }}
         run: python3 .github/scripts/release/publish.py spx
 
+  # 发布 npm 包（trusted publishing，需要 id-token 写权限）
   publish-npm:
     name: Publish npm package
     needs: [build-release, prepare-spx-release]
@@ -170,6 +239,7 @@ jobs:
       release_version: ${{ needs.build-release.outputs.version }}
       release_artifact: web-release
 
+  # 开发版 npm 发布前的目标校验（必须是 goplus/spx 的 dev 分支）
   validate-dev-npm:
     name: Validate development npm target
     if: ${{ inputs.operation == 'publish-dev-npm' }}
@@ -203,6 +273,7 @@ jobs:
           RUNTIME_STATE: ${{ steps.runtime.outputs.runtime_state }}
         run: python3 .github/scripts/release/plan.py dev-runtime-policy
 
+  # 开发版 npm 发布（不带 release_version，走 dev tag）
   publish-dev-npm:
     name: Publish development npm package
     needs: validate-dev-npm
@@ -214,6 +285,7 @@ jobs:
     with:
       target: ${{ github.sha }}
 
+  # 把之前创建的 release 草稿转正（draft=false）——正式发布的最后一步
   publish-spx-release:
     name: Finalize SPX release
     needs: [build-release, prepare-spx-release, publish-npm]
@@ -230,6 +302,15 @@ jobs:
           REPOSITORY: ${{ needs.build-release.outputs.release_repository }}
         run: gh release edit "$RELEASE_TAG" --repo "$REPOSITORY" --draft=false
 
+  # ===================================================================
+  # 4) release-gate —— 总验收员（fail-closed 设计）
+  #
+  # 等所有 job 结束后检查：你选的 operation 必需的 job 是否全部 success。
+  # 任何必需 job 是 skipped/failure/cancelled 都判整个 run 红。
+  # 之前 macOS runner 断线时看到的
+  #   [error] Required job did not succeed: validate-e2e (failure)
+  # 就是这里报的——门禁不放水。
+  # ===================================================================
   release-gate:
     name: Verify release operation completed
     needs:
@@ -248,7 +329,7 @@ jobs:
         shell: python
         env:
           OPERATION: ${{ inputs.operation }}
-          NEEDS_JSON: ${{ toJSON(needs) }}
+          NEEDS_JSON: ${{ toJSON(needs) }}   # 把所有上游 job 的结果序列化成 JSON
         run: |
           import json
           import os
