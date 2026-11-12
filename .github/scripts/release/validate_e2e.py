@@ -1,0 +1,209 @@
+#!/usr/bin/env python3
+"""Validate a release-candidate SPX engine against an spxbench e2e suite.
+
+Flow: publish an rc prerelease (the shelf spxbench can download from) ->
+resolve the gate suite by name -> register the candidate version on spxbench
+via sourceUrl -> run the suite pinned to that version -> poll to a terminal
+state -> report green/red. The rc prerelease is deleted on every exit path.
+
+Required environment:
+  SPXBENCH_URL        spxbench base URL, e.g. https://spxbench.qiniu.io
+  SPXBENCH_API_TOKEN  spxbench admin bearer token
+  ZIP_PATH            path to the built spx_web.zip
+  RC_VERSION          candidate version, e.g. 4.0.2-rc.43192600496
+Optional:
+  SUITE_NAME          gate suite name (default: spx; cross-repo contract)
+  RUN_TIMEOUT_MINUTES overall budget (default: 30)
+  GITHUB_REPOSITORY / GITHUB_SHA  provided by Actions; fall back to gh/git
+"""
+
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+LOG_PREFIX = "[validate-e2e]"
+POLL_INTERVAL_SECONDS = 30
+BUSY_RETRY_SECONDS = 120
+
+
+class ValidationError(Exception):
+    """Fatal validation-flow error; the message is user-facing log text."""
+
+
+def log(message):
+    print(f"{LOG_PREFIX} {message}", flush=True)
+
+
+def run(*args, check=True):
+    result = subprocess.run(args, text=True, capture_output=True)
+    if check and result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        raise ValidationError(f"command failed ({result.returncode}): {' '.join(args)}"
+                              + (f": {detail}" if detail else ""))
+    return result
+
+
+def api(url, token, method="GET", payload=None):
+    """Return (http_status, parsed_body) for one spxbench API call."""
+    request = urllib.request.Request(url, method=method)
+    request.add_header("Authorization", f"Bearer {token}")
+    data = None
+    if payload is not None:
+        request.add_header("Content-Type", "application/json")
+        data = json.dumps(payload).encode()
+    try:
+        with urllib.request.urlopen(request, data=data, timeout=180) as response:
+            body = response.read().decode()
+            return response.status, (json.loads(body) if body else {})
+    except urllib.error.HTTPError as error:
+        body = error.read().decode()
+        try:
+            return error.code, json.loads(body)
+        except ValueError:
+            return error.code, body
+
+
+def require_env(name):
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise ValidationError(f"required environment variable {name} is not set")
+    return value
+
+
+def repository_name():
+    env_value = os.environ.get("GITHUB_REPOSITORY", "").strip()
+    if env_value:
+        return env_value
+    return run("gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner").stdout.strip()
+
+
+def commit_sha():
+    env_value = os.environ.get("GITHUB_SHA", "").strip()
+    if env_value:
+        return env_value
+    return run("git", "rev-parse", "HEAD").stdout.strip()
+
+
+def find_suite_id(suites, name):
+    for suite in suites or []:
+        if suite.get("name") == name:
+            return suite.get("id")
+    return None
+
+
+def failing_cases(state):
+    return [case for case in state.get("cases") or [] if case.get("status") != "pass"]
+
+
+def create_rc_release(rc_tag, zip_path, target):
+    log(f"1/7 creating rc prerelease {rc_tag}")
+    run("gh", "release", "create", rc_tag, f"{zip_path}#spx_web.zip",
+        "--title", f"SPX {rc_tag[1:]} (e2e validation candidate)",
+        "--notes", "Temporary candidate uploaded by release validation; deleted when validation ends.",
+        "--prerelease", "--target", target)
+    # The asset name must stay spx_web.zip: spxbench downloads it through a
+    # fixed URL template component.
+
+
+def delete_rc_release(rc_tag):
+    log(f"7/7 deleting rc prerelease {rc_tag}")
+    result = run("gh", "release", "delete", rc_tag, "--cleanup-tag", "--yes", check=False)
+    if result.returncode != 0:
+        log("warning: rc deletion failed, remove it manually")
+
+
+def main():
+    spxbench_url = require_env("SPXBENCH_URL").rstrip("/")
+    token = require_env("SPXBENCH_API_TOKEN")
+    zip_path = require_env("ZIP_PATH")
+    rc_version = require_env("RC_VERSION")
+    suite_name = os.environ.get("SUITE_NAME", "").strip() or "spx"
+    timeout_minutes = int(os.environ.get("RUN_TIMEOUT_MINUTES", "").strip() or 30)
+    rc_tag = f"v{rc_version}"
+    deadline = time.monotonic() + timeout_minutes * 60
+
+    create_rc_release(rc_tag, zip_path, commit_sha())
+    try:
+        # 2/7 resolve the gate suite by name: ids are per-database, names are the contract.
+        log(f"2/7 looking up suite {suite_name!r}")
+        status, body = api(f"{spxbench_url}/api/suites", token)
+        if status != 200:
+            raise ValidationError(f"list suites failed: HTTP {status}: {body}")
+        suite_id = find_suite_id(body.get("suites"), suite_name)
+        if suite_id is None:
+            available = ", ".join(sorted((s.get("name") or "") for s in body.get("suites") or []))
+            raise ValidationError(f"no suite named {suite_name!r}; available: {available or '(none)'}")
+        log(f"   suite id={suite_id}")
+
+        # 3/7 register the candidate: spxbench downloads it from the rc shelf.
+        asset_url = (f"https://github.com/{repository_name()}"
+                     f"/releases/download/{rc_tag}/spx_web.zip")
+        log(f"   candidate package: {asset_url}")
+        log(f"3/7 registering version {rc_version} (server-side download takes ~15s)")
+        status, body = api(f"{spxbench_url}/api/runtime-versions", token, method="POST",
+                           payload={"action": "install", "kind": "spx",
+                                    "version": rc_version, "sourceUrl": asset_url})
+        if status != 200:
+            raise ValidationError(f"install failed: HTTP {status}: {body}")
+        digest = next((item.get("digest") for item in body.get("versions", [])
+                       if item.get("kind") == "spx" and item.get("version") == rc_version), "")
+        log(f"   installed, digest={digest}")
+
+        # 4/7 start the pinned suite run; a busy slot (409) retries until deadline.
+        log(f"4/7 starting suite run (suite={suite_id}, spxVersion={rc_version})")
+        query = urllib.parse.urlencode({"suite": suite_id, "spxVersion": rc_version})
+        job_id = None
+        while job_id is None:
+            status, body = api(f"{spxbench_url}/__e2e/api/run?{query}", token, method="POST")
+            if status == 200:
+                job_id = body.get("jobId")
+            elif status == 409:
+                log(f"   run slot busy (409), retrying in {BUSY_RETRY_SECONDS}s")
+                if time.monotonic() >= deadline:
+                    raise ValidationError("timed out waiting for a free run slot")
+                time.sleep(BUSY_RETRY_SECONDS)
+            else:
+                raise ValidationError(f"run failed: HTTP {status}: {body}")
+        log(f"   job #{job_id} accepted")
+
+        # 5/7 poll until our job reaches a terminal state.
+        log(f"5/7 polling job state (every {POLL_INTERVAL_SECONDS}s)")
+        state = {}
+        while True:
+            status, state = api(f"{spxbench_url}/__e2e/api/state", token)
+            if status != 200:
+                raise ValidationError(f"state read failed: HTTP {status}: {state}")
+            if not state.get("running") and state.get("jobId") == job_id:
+                break
+            if time.monotonic() >= deadline:
+                raise ValidationError(f"job #{job_id} did not finish within {timeout_minutes} minutes")
+            log(f"   progress {state.get('completed')}/{state.get('total')} "
+                f"passed={state.get('passed')} failed={state.get('failed')}")
+            time.sleep(POLL_INTERVAL_SECONDS)
+
+        # 6/7 verdict: any failed case turns the rehearsal red.
+        total, passed, failed = state.get("total"), state.get("passed"), state.get("failed")
+        log(f"6/7 result: total={total} passed={passed} failed={failed}")
+        log(f"   details: {spxbench_url}/__e2e?job={job_id}")
+        failures = failing_cases(state)
+        if failures:
+            log("   failing cases:")
+            for case in failures:
+                log(f"     - {case.get('name')} [{case.get('status')}]")
+            raise ValidationError(f"candidate {rc_version} failed suite {suite_name!r}; rehearsal is RED")
+        log(f"   all green: {rc_version} passed suite {suite_name!r} ({total} cases)")
+    finally:
+        delete_rc_release(rc_tag)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except ValidationError as error:
+        print(f"{LOG_PREFIX}[error] {error}", file=sys.stderr, flush=True)
+        raise SystemExit(1)

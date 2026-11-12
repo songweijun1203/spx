@@ -180,6 +180,7 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_publication_scheduling_and_development_isolation(self):
         contract = {
             "build-release": ((), "inputs.operation!='publish-dev-npm'"),
+            "validate-e2e": (("build-release",), "!cancelled()&&inputs.operation=='dry-run'"),
             "publish-runtime": (("build-release",), "!cancelled()&&inputs.operation!='dry-run'&&needs.build-release.result=='success'"),
             "prepare-spx-release": (("build-release", "publish-runtime"), "!cancelled()&&inputs.operation=='publish-release'&&needs.publish-runtime.result=='success'"),
             "publish-npm": (("build-release", "prepare-spx-release"), "!cancelled()&&inputs.operation=='publish-release'&&needs.prepare-spx-release.result=='success'"),
@@ -206,12 +207,12 @@ class ReleaseWorkflowTest(unittest.TestCase):
     def test_release_gate_is_operation_aware_and_fail_closed(self):
         gate = self.jobs["release-gate"]
         required = {
-            "dry-run": ("build-release",),
+            "dry-run": ("build-release", "validate-e2e"),
             "publish-runtime": ("build-release", "publish-runtime"),
             "publish-release": ("build-release", "publish-runtime", "prepare-spx-release", "publish-npm", "publish-spx-release"),
             "publish-dev-npm": ("validate-dev-npm", "publish-dev-npm"),
         }
-        terminal_jobs = (*required["publish-release"], *required["publish-dev-npm"])
+        terminal_jobs = (*required["publish-release"], "validate-e2e", *required["publish-dev-npm"])
         self.assertEqual(job_needs(gate), terminal_jobs)
         self.assertEqual(job_condition(gate), "!cancelled()")
         step = named_step(gate, "Require the selected operation's terminal jobs")
