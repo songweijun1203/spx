@@ -63,6 +63,7 @@ jobs:
           path: dist
 
       - name: Run spxbench regression suite
+        id: suite
         shell: bash
         env:
           SPXBENCH_API_TOKEN: ${{ secrets.SPXBENCH_API_TOKEN }}
@@ -71,13 +72,25 @@ jobs:
           GITHUB_SHA: ${{ github.sha }}
         run: python3 .github/scripts/release/run_spxbench_suite.py
 
-      - name: Retry candidate prerelease cleanup after failure or cancellation
-        if: ${{ failure() || cancelled() }}
+      - name: Retry candidate prerelease cleanup
+        if: >-
+          ${{
+            (failure() || cancelled() || steps.suite.outputs.candidate_release_cleanup_failed == 'true') &&
+            (steps.suite.outputs.candidate_install_started != 'true' || steps.suite.outputs.candidate_removed == 'true')
+          }}
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_TAG: v${{ env.CANDIDATE_VERSION }}
-        run: gh release delete "$CANDIDATE_TAG" --cleanup-tag --yes || true
+        run: |
+          if gh release delete "$CANDIDATE_TAG" --cleanup-tag --yes; then
+            echo '- Prerelease cleanup retry: **deleted**.' >> "$GITHUB_STEP_SUMMARY" || \
+              echo '::warning title=spxbench summary::Could not write prerelease cleanup result'
+          else
+            echo "::warning title=spxbench prerelease cleanup::Could not delete $CANDIDATE_TAG after retry"
+            echo '- Prerelease cleanup retry: **failed**.' >> "$GITHUB_STEP_SUMMARY" || \
+              echo '::warning title=spxbench summary::Could not write prerelease cleanup result'
+          fi
 
   publish-runtime:
     name: Publish or reuse runtime release

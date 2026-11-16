@@ -25,6 +25,8 @@ DEFAULT_SPXBENCH_URL = "https://spxbench.qiniu.io"
 
 POLL_INTERVAL_SECONDS = 30
 BUSY_RETRY_SECONDS = 120
+REMOVE_TIMEOUT_SECONDS = 120
+REMOVE_RETRY_SECONDS = 10
 
 
 class SpxbenchSuiteError(Exception):
@@ -34,6 +36,12 @@ class SpxbenchSuiteError(Exception):
 def log(message):
     # Release-script convention: [info] on stdout, [error] on stderr.
     print(f"[info] {message}", flush=True)
+
+
+def warn_cleanup(message):
+    print(f"[warning] {message}", flush=True)
+    escaped = str(message).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    print(f"::warning title=spxbench cleanup::{escaped}", flush=True)
 
 
 def run_command(*args, check=True):
@@ -72,6 +80,13 @@ def require_env(name):
     if not value:
         raise SpxbenchSuiteError(f"required environment variable {name} is not set")
     return value
+
+
+def write_step_output(name):
+    path = os.environ.get("GITHUB_OUTPUT")
+    if path:
+        with open(path, "a") as output:
+            output.write(f"{name}=true\n")
 
 
 def github_repository():
@@ -156,7 +171,7 @@ def delete_candidate_release(candidate_tag):
 
 
 class SpxbenchSuiteGate:
-    """Run a candidate through an spxbench suite and clean up its release."""
+    """Run a candidate through an spxbench suite and manage its cleanup."""
 
     def __init__(self):
         self.spxbench_url = (os.environ.get("SPXBENCH_URL") or DEFAULT_SPXBENCH_URL).strip().rstrip("/")
@@ -172,6 +187,8 @@ class SpxbenchSuiteGate:
             raise SpxbenchSuiteError("SPXBENCH_TIMEOUT_MINUTES must be a positive integer")
         self.candidate_tag = f"v{self.candidate_version}"
         self.deadline = time.monotonic() + self.timeout_minutes * 60
+        self.install_started = False
+        self.candidate_removed = False
 
     def request(self, path, method="GET", payload=None):
         remaining = self.deadline - time.monotonic()
@@ -198,6 +215,8 @@ class SpxbenchSuiteGate:
                      f"/releases/download/{self.candidate_tag}/spx_web.zip")
         log(f"   candidate package: {asset_url}")
         log(f"installing version {self.candidate_version}")
+        write_step_output("candidate_install_started")
+        self.install_started = True
         status, body = self.request("/api/runtime-versions", method="POST",
                                 payload={"action": "install", "kind": "spx",
                                          "version": self.candidate_version, "sourceUrl": asset_url})
@@ -267,8 +286,64 @@ class SpxbenchSuiteGate:
                                   + "; ".join(reasons))
         log(f"   candidate {self.candidate_version} passed suite {self.suite_name!r} ({total} cases)")
 
+    def remove_candidate(self):
+        log(f"removing passed candidate {self.candidate_version} from spxbench")
+        deadline = time.monotonic() + REMOVE_TIMEOUT_SECONDS
+        payload = {"action": "remove", "kind": "spx", "version": self.candidate_version}
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SpxbenchSuiteError(f"timed out removing candidate {self.candidate_version} from spxbench")
+            status, body = request_spxbench(f"{self.spxbench_url}/api/runtime-versions", self.token,
+                                            method="POST", payload=payload, timeout=min(30, remaining))
+            if status == 200:
+                versions = body.get("versions") if isinstance(body, dict) else None
+                if not isinstance(versions, list) or not all(isinstance(item, dict) for item in versions):
+                    raise SpxbenchSuiteError(f"invalid candidate removal response: {body}")
+                if any(item.get("kind") == "spx" and item.get("version") == self.candidate_version
+                       for item in versions):
+                    raise SpxbenchSuiteError(f"spxbench still lists candidate {self.candidate_version} after removal")
+                break
+            if status == 404:
+                break
+            if status != 409:
+                raise SpxbenchSuiteError(f"remove candidate failed: HTTP {status}: {body}")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise SpxbenchSuiteError(f"timed out removing candidate {self.candidate_version}: {body}")
+            delay = min(REMOVE_RETRY_SECONDS, remaining)
+            log(f"   candidate removal blocked (409), retrying in {delay:.0f}s")
+            time.sleep(delay)
+        self.candidate_removed = True
+        write_step_output("candidate_removed")
+        log(f"   removed candidate {self.candidate_version} from spxbench")
+
+    def write_summary(self, suite_result, runtime_cleanup, release_cleanup, job_id, cleanup_notes):
+        path = os.environ.get("GITHUB_STEP_SUMMARY")
+        if not path:
+            return
+        lines = ["### spxbench regression suite", "",
+                 f"- Suite: `{self.suite_name}`",
+                 f"- Candidate: `{self.candidate_version}`",
+                 f"- Regression: **{suite_result}**",
+                 f"- spxbench candidate: **{runtime_cleanup}**",
+                 f"- GitHub prerelease: **{release_cleanup}**"]
+        if job_id is not None:
+            lines.append(f"- [Test run details]({self.spxbench_url}/__e2e?job={job_id})")
+        for note in cleanup_notes:
+            lines.append(f"- Cleanup warning: {' '.join(str(note).splitlines())}")
+        try:
+            with open(path, "a", encoding="utf-8") as summary:
+                summary.write("\n".join(lines) + "\n\n")
+        except OSError as error:
+            warn_cleanup(f"writing GitHub Step Summary failed: {error}")
+
     def run(self):
-        completed = False
+        suite_result = "not completed"
+        runtime_cleanup = "not installed"
+        release_cleanup = "not attempted"
+        cleanup_notes = []
+        job_id = None
         try:
             # Creation is inside the try: gh release create is multi-step and can
             # fail after the remote release already exists; finally must clean it.
@@ -277,12 +352,37 @@ class SpxbenchSuiteGate:
             self.install_candidate()
             job_id = self.start_suite_run(suite_id)
             state = self.wait_for_suite_job(job_id)
+            suite_result = "failed"
             self.check_suite_result(job_id, state)
-            completed = True
+            suite_result = "passed"
+            try:
+                self.remove_candidate()
+            except Exception as error:
+                cleanup_notes.append(f"spxbench candidate removal: {error}")
+                warn_cleanup(f"spxbench candidate removal failed: {error}")
+            runtime_cleanup = "removed" if self.candidate_removed else "failed"
         finally:
-            deletion_error = delete_candidate_release(self.candidate_tag)
-            if completed and deletion_error:
-                raise SpxbenchSuiteError(f"spxbench suite passed, but release cleanup failed: {deletion_error}")
+            if self.install_started and not self.candidate_removed:
+                if suite_result != "passed":
+                    runtime_cleanup = "retained"
+                release_cleanup = "retained"
+                log(f"retaining candidate {self.candidate_version} and its prerelease for investigation")
+            else:
+                try:
+                    deletion_error = delete_candidate_release(self.candidate_tag)
+                except Exception as error:
+                    deletion_error = str(error)
+                if deletion_error:
+                    release_cleanup = "failed"
+                    cleanup_notes.append(f"GitHub prerelease deletion: {deletion_error}")
+                    warn_cleanup(f"GitHub prerelease cleanup failed: {deletion_error}")
+                    try:
+                        write_step_output("candidate_release_cleanup_failed")
+                    except OSError as error:
+                        warn_cleanup(f"recording prerelease cleanup failure failed: {error}")
+                else:
+                    release_cleanup = "deleted"
+            self.write_summary(suite_result, runtime_cleanup, release_cleanup, job_id, cleanup_notes)
 
 
 def main():
